@@ -1,0 +1,11 @@
+[package]
+name = "cruding_core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+moka = { workspace = true }
+async-trait = { workspace = true }
+mockall = { workspace = true }
+tracing = { workspace = true }
+arc-swap = { workspace = true }

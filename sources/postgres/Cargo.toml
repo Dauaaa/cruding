@@ -1,0 +1,29 @@
+[package]
+name = "cruding_pg_source"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cruding_core = { workspace = true }
+moka = { workspace = true }
+tokio = { workspace = true }
+sea-orm = { workspace = true }
+kanal = { workspace = true }
+async-trait = { workspace = true }
+mockall = { workspace = true }
+sea-orm-migration = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_plain = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+strum = { workspace = true }
+sqlx = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+fake = { workspace = true }
+futures = { workspace = true }
+dashmap = { workspace = true }
