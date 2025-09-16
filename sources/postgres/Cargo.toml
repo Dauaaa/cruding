@@ -27,3 +27,9 @@ regex = { workspace = true }
 fake = { workspace = true }
 futures = { workspace = true }
 dashmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+sea-orm = { workspace = true }
+thiserror = { workspace = true }
+serial_test = { workspace = true }

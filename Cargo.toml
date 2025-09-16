@@ -41,5 +41,7 @@ futures = "0.3"
 dashmap = "6"
 arc-swap = "1.7.1"
 axum = "0.8.4"
+thiserror = "2.0.16"
+serial_test = "3.2.0"
 
 cruding_core = { path = "./core" }

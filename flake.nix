@@ -22,7 +22,7 @@
 
         rust-toolchain = pkgs.fenix.fromToolchainFile {
           file = ./rust-toolchain.toml;
-          sha256 = "sha256-DjzLqHVKpOSw+W/aV7vPyqHsTeMvl/v234FPwNqr14s=";
+          sha256 = "sha256-Pyzt2MSYsRKWHi21uq4h1REVeN6/I2HTHNAf6wtGBa8=";
         };
 
         libraries = [
@@ -42,6 +42,7 @@
                 rust-toolchain
                 pkgs.nixfmt
                 pkgs.fish
+                pkgs.postgresql
             ];
 
             shellHook = ''

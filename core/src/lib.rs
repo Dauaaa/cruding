@@ -35,15 +35,21 @@ pub trait CrudableSource<CRUD: Crudable>: Send + Sync + 'static {
     type Error: Send + Sync + 'static;
     type SourceHandle: Send + Sync + 'static;
 
-    async fn create(&self, items: Vec<CRUD>, handle: &mut Self::SourceHandle)
-    -> Result<Vec<CRUD>, Self::Error>;
+    async fn create(
+        &self,
+        items: Vec<CRUD>,
+        handle: &mut Self::SourceHandle,
+    ) -> Result<Vec<CRUD>, Self::Error>;
     async fn read(
         &self,
         keys: &[CRUD::Pkey],
         handle: &mut Self::SourceHandle,
     ) -> Result<Vec<CRUD>, Self::Error>;
-    async fn update(&self, items: Vec<CRUD>, handle: &mut Self::SourceHandle)
-    -> Result<Vec<CRUD>, Self::Error>;
+    async fn update(
+        &self,
+        items: Vec<CRUD>,
+        handle: &mut Self::SourceHandle,
+    ) -> Result<Vec<CRUD>, Self::Error>;
     async fn read_for_update(
         &self,
         keys: &[CRUD::Pkey],
@@ -60,7 +66,7 @@ pub trait CrudableSource<CRUD: Crudable>: Send + Sync + 'static {
     /// Hints the handler if it should use the cache given the current context. This is useful
     /// if, for example, a database implementation is under a transaction (so whatever the db
     /// returns could be tainted with uncommited changes).
-    fn use_cache(&self, handle: &Self::SourceHandle) -> bool;
+    fn should_use_cache(&self, handle: &Self::SourceHandle) -> bool;
 }
 
 pub struct UpdateComparingParams<CRUD: Crudable> {
@@ -70,13 +76,19 @@ pub struct UpdateComparingParams<CRUD: Crudable> {
 }
 
 #[async_trait]
-impl<CRUD: Crudable> CrudableMap<CRUD> for moka::future::Cache<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>> {
+impl<CRUD: Crudable> CrudableMap<CRUD>
+    for moka::future::Cache<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>
+{
     async fn insert(&self, item: CRUD) -> Arc<CRUD> {
         let new_item = Arc::new(item);
         let key = new_item.pkey();
 
         // Guarantee that new_item is latest or not included in cache
-        let entry = self.entry(key).or_insert_with(async { Arc::new(arc_swap::ArcSwap::new(new_item.clone())) }).await;
+        let entry =
+            moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::entry(self, key)
+                .or_insert_with(async { Arc::new(arc_swap::ArcSwap::new(new_item.clone())) })
+                .await;
+
         entry.value().rcu(|cur| {
             if cur.mono_field() < new_item.mono_field() {
                 new_item.clone()
@@ -89,14 +101,17 @@ impl<CRUD: Crudable> CrudableMap<CRUD> for moka::future::Cache<CRUD::Pkey, Arc<a
     }
 
     async fn invalidate(&self, key: &CRUD::Pkey) {
-        self.invalidate(key).await;
+        moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::invalidate(self, key)
+            .await;
     }
 
     async fn get(&self, key: &CRUD::Pkey) -> Option<Arc<CRUD>> {
-        self.get(key).await.map(|x| x.load_full())
+        moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::get(self, key)
+            .await
+            .map(|x| x.load_full())
     }
 
     async fn contains_key(&self, key: &CRUD::Pkey) -> bool {
-        self.contains_key(key)
+        moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::contains_key(self, key)
     }
 }
