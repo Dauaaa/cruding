@@ -97,7 +97,7 @@ async fn connect_and_prepare() -> DatabaseConnection {
 fn source(
     lock_for_update: bool,
     conn: DatabaseConnection,
-) -> CrudablePostgresSource<Model, Entity, (), LiveErr> {
+) -> CrudablePostgresSource<Entity, (), LiveErr> {
     CrudablePostgresSource::new(conn, lock_for_update)
 }
 

@@ -42,10 +42,9 @@ type BeforeDeleteResolvedHook<Handler, CRUD, Ctx, Error> = dyn CrudableHook<In =
 pub struct CrudableHandlerImpl<
     CRUD: Crudable,
     Map: CrudableMap<CRUD>,
-    Source: CrudableSource<CRUD, Error = DbError>,
+    Source: CrudableSource<CRUD>,
     Ctx,
-    Error: From<DbError>,
-    DbError,
+    Error: From<Source::Error>,
 > {
     map: Map,
     source: Source,
@@ -99,7 +98,7 @@ where
 #[async_trait]
 impl<CRUD, Map, Source, Ctx, Error, DbError, SourceHandle>
     CrudableHandler<CRUD, Ctx, SourceHandle, Error>
-    for CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error, DbError>
+    for CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error>
 where
     CRUD: Crudable,
     Map: CrudableMap<CRUD>,
@@ -146,16 +145,15 @@ where
     }
 }
 
-impl<CRUD, Map, Source, Ctx, Error, DbError, SourceHandle>
-    CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error, DbError>
+impl<CRUD, Map, Source, Ctx, Error, SourceHandle> CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error>
 where
     CRUD: Crudable,
     Map: CrudableMap<CRUD>,
-    Source: CrudableSource<CRUD, Error = DbError, SourceHandle = SourceHandle>,
+    Source: CrudableSource<CRUD, SourceHandle = SourceHandle>,
     Ctx: Send,
     SourceHandle: Send,
-    Error: From<DbError> + Send,
-    DbError: Send,
+    Error: From<Source::Error> + Send,
+    Source::Error: Send,
 {
     /// Create a new instance of a CrudableHandler, all hooks will be empty, you need to install
     /// them

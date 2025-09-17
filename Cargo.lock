@@ -553,7 +553,10 @@ dependencies = [
  "async-trait",
  "axum",
  "cruding_core",
+ "cruding_pg_source",
+ "sea-orm",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

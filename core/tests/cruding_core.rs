@@ -109,8 +109,7 @@ fn new_cache() -> Cache<u64, Arc<ArcSwap<Item>>> {
 fn handler_with(
     source: MemSource,
     cache: Cache<u64, Arc<ArcSwap<Item>>>,
-) -> CrudableHandlerImpl<Item, Cache<u64, Arc<ArcSwap<Item>>>, MemSource, TestCtx, TestError, DbError>
-{
+) -> CrudableHandlerImpl<Item, Cache<u64, Arc<ArcSwap<Item>>>, MemSource, TestCtx, TestError> {
     CrudableHandlerImpl::new(cache, source)
 }
 

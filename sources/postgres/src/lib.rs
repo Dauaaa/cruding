@@ -19,19 +19,19 @@ where
 }
 
 pub struct CrudablePostgresSource<
-    CRUD: Crudable
-        + ModelTrait<Entity = CRUDTable>
-        + IntoActiveModel<<CRUDTable as EntityTrait>::ActiveModel>
-        + FromQueryResult,
-    CRUDTable: PostgresCrudableTable<Model = CRUD>,
+    CRUDTable: PostgresCrudableTable,
     Ctx: Send + Sync + 'static,
     Error: From<sea_orm::DbErr>,
 > where
     <CRUDTable as EntityTrait>::Column: Iterable + PartialEq,
+    <CRUDTable as EntityTrait>::Model: Crudable
+        + ModelTrait<Entity = CRUDTable>
+        + IntoActiveModel<<CRUDTable as EntityTrait>::ActiveModel>
+        + FromQueryResult,
 {
     conn: DatabaseConnection,
     lock_for_update: bool,
-    _p: PhantomData<(CRUD, CRUDTable, Ctx, Error)>,
+    _p: PhantomData<(CRUDTable, Ctx, Error)>,
 }
 
 pub enum PostgresCrudableConnection {
@@ -80,13 +80,13 @@ impl PostgresCrudableConnection {
     }
 }
 
-impl<CRUD, CRUDTable, Ctx, Error> CrudablePostgresSource<CRUD, CRUDTable, Ctx, Error>
+impl<CRUDTable, Ctx, Error> CrudablePostgresSource<CRUDTable, Ctx, Error>
 where
-    CRUD: Crudable
+    CRUDTable: PostgresCrudableTable,
+    CRUDTable::Model: Crudable
         + ModelTrait<Entity = CRUDTable>
         + IntoActiveModel<<CRUDTable as EntityTrait>::ActiveModel>
         + FromQueryResult,
-    CRUDTable: PostgresCrudableTable<Model = CRUD>,
     CRUDTable::Column: Iterable + PartialEq,
     Error: From<sea_orm::DbErr> + Send + Sync + 'static,
     Ctx: Send + Sync + 'static,
@@ -109,14 +109,14 @@ where
 }
 
 #[async_trait]
-impl<CRUD, CRUDTable, SourceHandle, Error> CrudableSource<CRUD>
-    for CrudablePostgresSource<CRUD, CRUDTable, SourceHandle, Error>
+impl<CRUDTable, SourceHandle, Error> CrudableSource<<CRUDTable as EntityTrait>::Model>
+    for CrudablePostgresSource<CRUDTable, SourceHandle, Error>
 where
-    CRUD: Crudable
+    CRUDTable: PostgresCrudableTable,
+    CRUDTable::Model: Crudable
         + ModelTrait<Entity = CRUDTable>
         + IntoActiveModel<<CRUDTable as EntityTrait>::ActiveModel>
         + FromQueryResult,
-    CRUDTable: PostgresCrudableTable<Model = CRUD>,
     CRUDTable::Column: Iterable + PartialEq,
     Error: From<sea_orm::DbErr> + Send + Sync + 'static,
     SourceHandle: Send + Sync + 'static,
@@ -127,15 +127,15 @@ where
     #[tracing::instrument(skip_all)]
     async fn create(
         &self,
-        items: Vec<CRUD>,
+        items: Vec<<CRUDTable as EntityTrait>::Model>,
         handle: &mut Self::SourceHandle,
-    ) -> Result<Vec<CRUD>, Self::Error> {
+    ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
         let active_models: Vec<<CRUDTable as EntityTrait>::ActiveModel> = items
             .into_iter()
             .map(IntoActiveModel::into_active_model)
             .collect();
 
-        let q = <CRUD as ModelTrait>::Entity::insert_many(active_models);
+        let q = CRUDTable::insert_many(active_models);
 
         let returned_items = match handle {
             PostgresCrudableConnection::Connection(c) => q.exec_with_returning_many(c).await,
@@ -153,11 +153,11 @@ where
     #[tracing::instrument(skip_all)]
     async fn read(
         &self,
-        keys: &[CRUD::Pkey],
+        keys: &[<<CRUDTable as EntityTrait>::Model as Crudable>::Pkey],
         handle: &mut Self::SourceHandle,
-    ) -> Result<Vec<CRUD>, Self::Error> {
-        let q = <CRUD as ModelTrait>::Entity::find()
-            .filter(<CRUDTable as PostgresCrudableTable>::get_pkey_filter(keys));
+    ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
+        let q =
+            CRUDTable::find().filter(<CRUDTable as PostgresCrudableTable>::get_pkey_filter(keys));
 
         let returned_items = match handle {
             PostgresCrudableConnection::Connection(c) => q.all(c).await,
@@ -171,15 +171,15 @@ where
     #[tracing::instrument(skip_all)]
     async fn update(
         &self,
-        items: Vec<CRUD>,
+        items: Vec<<CRUDTable as EntityTrait>::Model>,
         handle: &mut Self::SourceHandle,
-    ) -> Result<Vec<CRUD>, Self::Error> {
+    ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
         if items.is_empty() {
             return Ok(Vec::new());
         }
 
         // 1) Resolve table & columns from the entity
-        let table = <CRUD as ModelTrait>::Entity::default();
+        let table = CRUDTable::default();
         let table_name = format!(r#""{}""#, table.table_name());
         let pk_cols: Vec<<CRUDTable as EntityTrait>::Column> =
             <CRUDTable as PostgresCrudableTable>::get_pkey_columns();
@@ -294,11 +294,11 @@ where
     #[tracing::instrument(skip_all)]
     async fn read_for_update(
         &self,
-        keys: &[CRUD::Pkey],
+        keys: &[<<CRUDTable as EntityTrait>::Model as Crudable>::Pkey],
         handle: &mut Self::SourceHandle,
-    ) -> Result<Vec<CRUD>, Self::Error> {
-        let mut q = <CRUD as ModelTrait>::Entity::find()
-            .filter(<CRUDTable as PostgresCrudableTable>::get_pkey_filter(keys));
+    ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
+        let mut q =
+            CRUDTable::find().filter(<CRUDTable as PostgresCrudableTable>::get_pkey_filter(keys));
 
         if self.lock_for_update {
             handle.maybe_begin_transaction().await?;
@@ -322,10 +322,10 @@ where
     #[tracing::instrument(skip_all)]
     async fn delete(
         &self,
-        keys: &[CRUD::Pkey],
+        keys: &[<<CRUDTable as EntityTrait>::Model as Crudable>::Pkey],
         handle: &mut Self::SourceHandle,
-    ) -> Result<Vec<CRUD>, Self::Error> {
-        let q = <CRUD as ModelTrait>::Entity::delete_many()
+    ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
+        let q = CRUDTable::delete_many()
             .filter(<CRUDTable as PostgresCrudableTable>::get_pkey_filter(keys));
 
         let returned_items = match handle {
