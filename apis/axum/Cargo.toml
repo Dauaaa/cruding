@@ -3,6 +3,14 @@ name = "cruding_axum_api"
 version = "0.1.0"
 edition = "2024"
 
+description = "axum Cruding api wrapper"
+license = { workspace = true }
+repository = { workspace = true }
+documentation = "https://docs.rs/cruding_axum_api"
+readme = { workspace = true }
+keywords = ["api", "crud"]
+categories = []
+
 [dependencies]
 axum = { workspace = true }
 cruding_core = { workspace = true }

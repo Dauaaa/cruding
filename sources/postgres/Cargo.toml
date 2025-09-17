@@ -2,6 +2,14 @@
 name = "cruding_pg_source"
 version = "0.1.0"
 edition = "2024"
+description = "core for the cruding crate"
+
+license = { workspace = true }
+repository = { workspace = true }
+documentation = "https://docs.rs/cruding_pg_source"
+readme = { workspace = true }
+keywords = ["api", "crud"]
+categories = []
 
 [dependencies]
 cruding_core = { workspace = true }

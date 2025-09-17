@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["apis/axum", "core", "sources/postgres"]
+members = ["apis/axum", "core", "cruding", "sources/postgres"]
+
+[workspace.package]
+license = "MIT"
+repository = "https://github.com/dauaaa/cruding"
+readme = "README.md"
+keywords = ["api", "crud"]
 
 [workspace.dependencies]
 moka = { version = "0.12.10", features = ["future"] }
@@ -49,5 +55,6 @@ tower = "0.5.2"
 okapi = "0.7.0"
 schemars = { version = "0.8", features = ["derive"] }
 
-cruding_core = { path = "./core" }
-cruding_pg_source = { path = "./sources/postgres" }
+cruding_core = { path = "./core", version = "0.1.0" }
+cruding_pg_source = { path = "./sources/postgres", version = "0.1.0"  }
+cruding_axum_api = { path = "./apis/axum", version = "0.1.0"  }

@@ -1,0 +1,17 @@
+[package]
+name = "cruding"
+version = "0.1.0"
+edition = "2024"
+
+description = "crate for declaring generic CRUD apis"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/cruding_core"
+readme.workspace = true
+keywords.workspace = true
+categories = []
+
+[dependencies]
+cruding_axum_api = { workspace = true }
+cruding_pg_source = { workspace = true }
+cruding_core = { workspace = true }
