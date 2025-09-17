@@ -103,7 +103,7 @@ where
         self.conn = conn;
     }
 
-    pub fn new_handle(&self) -> PostgresCrudableConnection {
+    pub fn new_source_handle(&self) -> PostgresCrudableConnection {
         PostgresCrudableConnection::Connection(self.conn.clone())
     }
 }

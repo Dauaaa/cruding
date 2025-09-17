@@ -96,7 +96,7 @@ where
 }
 
 #[async_trait]
-impl<CRUD, Map, Source, Ctx, Error, DbError, SourceHandle>
+impl<CRUD, Map, Source, Ctx, SourceHandle, Error, DbError>
     CrudableHandler<CRUD, Ctx, SourceHandle, Error>
     for CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error>
 where
@@ -145,7 +145,7 @@ where
     }
 }
 
-impl<CRUD, Map, Source, Ctx, Error, SourceHandle> CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error>
+impl<CRUD, Map, Source, Ctx, SourceHandle, Error> CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error>
 where
     CRUD: Crudable,
     Map: CrudableMap<CRUD>,
@@ -426,18 +426,18 @@ where
     }
 }
 
-pub trait CrudableHandlerGetter<CRUD, Ctx, Error, SourceHandle>: Clone + Send + Sync {
+pub trait CrudableHandlerGetter<CRUD, Ctx, SourceHandle, Error>: Clone + Send + Sync {
     fn handler(&self) -> &dyn CrudableHandler<CRUD, Ctx, SourceHandle, Error>;
 }
 
 #[async_trait]
-impl<CRUD, Ctx, Error, SourceHandle, CAH> CrudableHandler<CRUD, Ctx, SourceHandle, Error> for CAH
+impl<CRUD, Ctx, SourceHandle, Error, CAH> CrudableHandler<CRUD, Ctx, SourceHandle, Error> for CAH
 where
     CRUD: Crudable,
     Ctx: Send,
     Error: Send,
     SourceHandle: Send,
-    CAH: CrudableHandlerGetter<CRUD, Ctx, Error, SourceHandle>,
+    CAH: CrudableHandlerGetter<CRUD, Ctx, SourceHandle, Error>,
 {
     async fn create(
         &self,

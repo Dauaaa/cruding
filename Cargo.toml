@@ -43,6 +43,11 @@ arc-swap = "1.7.1"
 axum = "0.8.4"
 thiserror = "2.0.16"
 serial_test = "3.2.0"
+tower-service = "0.3.3"
+hyper = "1.7.0"
+tower = "0.5.2"
+okapi = "0.7.0"
+schemars = { version = "0.8", features = ["derive"] }
 
 cruding_core = { path = "./core" }
 cruding_pg_source = { path = "./sources/postgres" }

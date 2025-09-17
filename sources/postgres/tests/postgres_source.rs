@@ -116,7 +116,7 @@ async fn create_returns_inserted_rows() {
     let conn = connect_and_prepare().await;
     let src = source(false, conn);
 
-    let mut handle = src.new_handle();
+    let mut handle = src.new_source_handle();
     let rows = vec![
         Model {
             id: 1,
@@ -141,7 +141,7 @@ async fn create_returns_inserted_rows() {
 async fn read_filters_by_keys() {
     let conn = connect_and_prepare().await;
     let src = source(false, conn.clone());
-    let mut h = src.new_handle();
+    let mut h = src.new_source_handle();
 
     let seed = vec![
         Model {
@@ -164,7 +164,7 @@ async fn read_filters_by_keys() {
         .await
         .unwrap();
 
-    let mut handle = src.new_handle();
+    let mut handle = src.new_source_handle();
     let out = CrudableSource::<Model>::read(&src, &[1, 3], &mut handle)
         .await
         .unwrap();
@@ -178,7 +178,7 @@ async fn read_filters_by_keys() {
 async fn update_many_returns_updated() {
     let conn = connect_and_prepare().await;
     let src = source(false, conn.clone());
-    let mut h = src.new_handle();
+    let mut h = src.new_source_handle();
 
     let seed = vec![
         Model {
@@ -209,7 +209,7 @@ async fn update_many_returns_updated() {
         },
     ];
 
-    let mut handle = src.new_handle();
+    let mut handle = src.new_source_handle();
     let out = CrudableSource::<Model>::update(&src, updated.clone(), &mut handle)
         .await
         .unwrap();
@@ -221,7 +221,7 @@ async fn update_many_returns_updated() {
 async fn delete_returns_deleted_rows() {
     let conn = connect_and_prepare().await;
     let src = source(false, conn.clone());
-    let mut h = src.new_handle();
+    let mut h = src.new_source_handle();
 
     let seed = vec![
         Model {
@@ -239,7 +239,7 @@ async fn delete_returns_deleted_rows() {
         .await
         .unwrap();
 
-    let mut handle = src.new_handle();
+    let mut handle = src.new_source_handle();
     let out = CrudableSource::<Model>::delete(&src, &[2, 4], &mut handle)
         .await
         .unwrap();
@@ -257,7 +257,7 @@ async fn read_for_update_owned_and_borrowed_behave() {
     let src = source(true, conn.clone());
 
     // Seed
-    let mut h_seed = src.new_handle();
+    let mut h_seed = src.new_source_handle();
     CrudableSource::<Model>::create(
         &src,
         vec![Model {
@@ -271,7 +271,7 @@ async fn read_for_update_owned_and_borrowed_behave() {
     .unwrap();
 
     // Case A: plain connection -> source begins & commits internally; handle ends as Connection
-    let mut h1 = src.new_handle();
+    let mut h1 = src.new_source_handle();
     let rows1 = CrudableSource::<Model>::read_for_update(&src, &[7], &mut h1)
         .await
         .unwrap();
@@ -283,7 +283,7 @@ async fn read_for_update_owned_and_borrowed_behave() {
 
     // Case B: owned tx -> remains our responsibility, but your impl auto-commits in read_for_update;
     // verify handle reset to Connection
-    let mut h2 = src.new_handle();
+    let mut h2 = src.new_source_handle();
     h2.maybe_begin_transaction().await.unwrap();
     let rows2 = CrudableSource::<Model>::read_for_update(&src, &[7], &mut h2)
         .await
@@ -314,11 +314,11 @@ async fn use_cache_policy_is_false_inside_tx_true_otherwise() {
     let src = source(false, conn.clone());
 
     // plain connection => use cache
-    let h1 = src.new_handle();
+    let h1 = src.new_source_handle();
     assert_eq!(CrudableSource::<Model>::should_use_cache(&src, &h1), true);
 
     // owned transaction => bypass cache
-    let mut h2 = src.new_handle();
+    let mut h2 = src.new_source_handle();
     h2.maybe_begin_transaction().await.unwrap();
     assert_eq!(CrudableSource::<Model>::should_use_cache(&src, &h2), false);
 
@@ -334,7 +334,7 @@ async fn end_to_end_inside_owned_tx() {
     let conn = connect_and_prepare().await;
     let src = source(true, conn);
 
-    let mut h = src.new_handle();
+    let mut h = src.new_source_handle();
     h.maybe_begin_transaction().await.unwrap();
 
     // create
