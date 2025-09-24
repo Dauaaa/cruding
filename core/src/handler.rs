@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 
-use crate::{Crudable, CrudableHook, CrudableMap, CrudableSource, UpdateComparingParams};
-use std::sync::Arc;
+use crate::{
+    Crudable, CrudableHook, CrudableMap, CrudableSource, UpdateComparingParams,
+    list::{CrudableSourceListExt, CrudingListParams},
+};
+use std::{str::FromStr, sync::Arc};
 
 pub enum MaybeArc<T> {
     Arced(Arc<T>),
@@ -38,13 +41,24 @@ type BeforeDeleteResolvedHook<Handler, CRUD, Ctx, Error> = dyn CrudableHook<In =
     + Send
     + Sync
     + 'static;
+type BeforeReadListHook<Handler, Column, Ctx, Error> = dyn CrudableHook<
+        In = CrudingListParams<Column>,
+        Out = CrudingListParams<Column>,
+        Error = Error,
+        Ctx = Ctx,
+        Handler = Handler,
+    > + Send
+    + Sync
+    + 'static;
 
+#[allow(clippy::type_complexity)]
 pub struct CrudableHandlerImpl<
     CRUD: Crudable,
     Map: CrudableMap<CRUD>,
     Source: CrudableSource<CRUD>,
     Ctx,
     Error: From<Source::Error>,
+    Column = (),
 > {
     map: Map,
     source: Source,
@@ -59,6 +73,8 @@ pub struct CrudableHandlerImpl<
 
     before_delete: Option<Box<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, Error>>>,
     before_delete_resolved: Option<Box<BeforeDeleteResolvedHook<Self, CRUD, Ctx, Error>>>,
+
+    before_read_list: Option<Box<BeforeReadListHook<Self, Column, Ctx, Error>>>,
 }
 
 #[async_trait]
@@ -93,6 +109,53 @@ where
         ctx: &mut Ctx,
         source_handle: &mut SourceHandle,
     ) -> Result<(), Error>;
+}
+
+#[async_trait]
+pub trait CrudableHandlerListExt<CRUD, Ctx, SourceHandle, Error, Column>
+where
+    CRUD: Crudable,
+    Ctx: Send,
+    SourceHandle: Send,
+    Error: Send,
+    Column: FromStr + Send + Sync + 'static,
+{
+    async fn read_list(
+        &self,
+        params: CrudingListParams<Column>,
+        ctx: &mut Ctx,
+        handle: &mut SourceHandle,
+    ) -> Result<Vec<MaybeArc<CRUD>>, Error>;
+}
+
+#[async_trait]
+impl<CRUD, Map, Source, Ctx, SourceHandle, Error, DbError, Column>
+    CrudableHandlerListExt<CRUD, Ctx, SourceHandle, Error, Column>
+    for CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error, Column>
+where
+    CRUD: Crudable,
+    Map: CrudableMap<CRUD>,
+    Source: CrudableSourceListExt<CRUD, Column, Error = DbError, SourceHandle = SourceHandle>,
+    Ctx: Send,
+    SourceHandle: Send,
+    Error: From<DbError> + Send,
+    DbError: Send,
+    Column: FromStr + Send + Sync + 'static,
+{
+    async fn read_list(
+        &self,
+        mut params: CrudingListParams<Column>,
+        ctx: &mut Ctx,
+        handle: &mut SourceHandle,
+    ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
+        if let Some(ref hook) = self.before_read_list {
+            params = hook.invoke(self, params, ctx).await?;
+        }
+
+        let ids = self.source.read_list_to_ids(params, handle).await?;
+
+        self.read_inner(ids, ctx, handle).await
+    }
 }
 
 #[async_trait]
@@ -145,7 +208,8 @@ where
     }
 }
 
-impl<CRUD, Map, Source, Ctx, SourceHandle, Error> CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error>
+impl<CRUD, Map, Source, Ctx, SourceHandle, Error, Column>
+    CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error, Column>
 where
     CRUD: Crudable,
     Map: CrudableMap<CRUD>,
@@ -168,6 +232,7 @@ where
             update_comparing: None,
             before_delete: None,
             before_delete_resolved: None,
+            before_read_list: None,
         }
     }
 
@@ -217,6 +282,13 @@ where
         self.before_delete_resolved = Some(hook);
         self
     }
+    pub fn install_before_read_list(
+        mut self,
+        hook: Box<BeforeReadListHook<Self, Column, Ctx, Error>>,
+    ) -> Self {
+        self.before_read_list = Some(hook);
+        self
+    }
 
     #[tracing::instrument(skip_all)]
     async fn create_inner(
@@ -229,11 +301,7 @@ where
             input = hook.invoke(self, input, ctx).await?;
         }
 
-        input = self
-            .source
-            .create(input, source_handle)
-            .await
-            .map_err(Into::into)?;
+        input = self.source.create(input, source_handle).await?;
 
         if self.source.should_use_cache(source_handle) {
             Ok(self
@@ -262,23 +330,17 @@ where
             let (mut items, missed_keys) = self.get_from_map(&input).await;
 
             items.extend(
-                self.persist_to_map(
-                    self.source
-                        .read(&missed_keys, source_handle)
-                        .await
-                        .map_err(Into::into)?,
-                )
-                .await
-                .into_iter()
-                .map(MaybeArc::Arced),
+                self.persist_to_map(self.source.read(&missed_keys, source_handle).await?)
+                    .await
+                    .into_iter()
+                    .map(MaybeArc::Arced),
             );
 
             items
         } else {
             self.source
                 .read(&input, source_handle)
-                .await
-                .map_err(Into::into)?
+                .await?
                 .into_iter()
                 .map(MaybeArc::Owned)
                 .collect()
@@ -304,11 +366,7 @@ where
 
         let keys = input.iter().map(CRUD::pkey).collect::<Vec<_>>();
 
-        let current = self
-            .source
-            .read_for_update(&keys, source_handle)
-            .await
-            .map_err(Into::into)?;
+        let current = self.source.read_for_update(&keys, source_handle).await?;
 
         if let Some(ref hook) = self.update_comparing {
             input = hook
@@ -323,11 +381,7 @@ where
                 .await?;
         }
 
-        input = self
-            .source
-            .update(input, source_handle)
-            .await
-            .map_err(Into::into)?;
+        input = self.source.update(input, source_handle).await?;
 
         if self.source.should_use_cache(source_handle) {
             Ok(self
@@ -356,23 +410,17 @@ where
             let (mut items, missed_keys) = self.get_from_map(&input).await;
 
             items.extend(
-                self.persist_to_map(
-                    self.source
-                        .read(&missed_keys, source_handle)
-                        .await
-                        .map_err(Into::into)?,
-                )
-                .await
-                .into_iter()
-                .map(MaybeArc::Arced),
+                self.persist_to_map(self.source.read(&missed_keys, source_handle).await?)
+                    .await
+                    .into_iter()
+                    .map(MaybeArc::Arced),
             );
 
             items
         } else {
             self.source
                 .read(&input, source_handle)
-                .await
-                .map_err(Into::into)?
+                .await?
                 .into_iter()
                 .map(MaybeArc::Owned)
                 .collect()
@@ -382,10 +430,7 @@ where
             hook.invoke(self, items, ctx).await?;
         }
 
-        self.source
-            .delete(&input, source_handle)
-            .await
-            .map_err(Into::into)?;
+        self.source.delete(&input, source_handle).await?;
 
         if self.source.should_use_cache(source_handle) {
             self.invalidate_from_map(&input).await;
@@ -428,6 +473,12 @@ where
 
 pub trait CrudableHandlerGetter<CRUD, Ctx, SourceHandle, Error>: Clone + Send + Sync {
     fn handler(&self) -> &dyn CrudableHandler<CRUD, Ctx, SourceHandle, Error>;
+}
+
+pub trait CrudableHandlerGetterListExt<CRUD, Ctx, SourceHandle, Error, Column>:
+    Clone + Send + Sync
+{
+    fn handler_list(&self) -> &dyn CrudableHandlerListExt<CRUD, Ctx, SourceHandle, Error, Column>;
 }
 
 #[async_trait]

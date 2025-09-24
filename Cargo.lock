@@ -417,8 +417,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "145052bdd345b87320e369255277e3fb5152762ad123a901ef5c262dd38fe8d2"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.0",
 ]
 
@@ -563,6 +565,7 @@ dependencies = [
  "axum",
  "cruding_core",
  "cruding_pg_source",
+ "cruding_qs_list_filter",
  "futures",
  "hyper",
  "okapi",
@@ -574,6 +577,7 @@ dependencies = [
  "tower",
  "tower-service",
  "tracing",
+ "urlencoding",
 ]
 
 [[package]]
@@ -585,6 +589,7 @@ dependencies = [
  "mockall",
  "moka",
  "rand 0.9.2",
+ "serde_json",
  "thiserror 2.0.16",
  "tokio",
  "tracing",
@@ -595,7 +600,10 @@ name = "cruding_pg_source"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
+ "chrono",
  "cruding_core",
+ "cruding_qs_list_filter",
  "dashmap",
  "fake",
  "futures",
@@ -605,6 +613,7 @@ dependencies = [
  "rand 0.9.2",
  "regex",
  "reqwest",
+ "rust_decimal",
  "sea-orm",
  "sea-orm-migration",
  "serde",
@@ -619,6 +628,15 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "cruding_qs_list_filter"
+version = "0.1.0"
+dependencies = [
+ "cruding_core",
+ "nom",
+ "serde_json",
 ]
 
 [[package]]
@@ -1644,6 +1662,15 @@ dependencies = [
  "tagptr",
  "thiserror 1.0.69",
  "uuid",
+]
+
+[[package]]
+name = "nom"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -3512,6 +3539,12 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
+
+[[package]]
+name = "urlencoding"
+version = "2.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "utf8_iter"

@@ -22,6 +22,8 @@ sea-orm = { workspace = true }
 tracing = { workspace = true }
 okapi = { workspace = true }
 schemars = { workspace = true }
+cruding_qs_list_filter = { workspace = true }
+urlencoding = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

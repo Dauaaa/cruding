@@ -1,12 +1,19 @@
+pub mod serde_json_to_sea_orm_vals;
+
 use std::{marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use cruding_core::{Crudable, CrudableSource};
+use cruding_core::{
+    Crudable, CrudableSource,
+    list::{CrudableSourceListExt, CrudingListParams, CrudingListSortOrder},
+};
 use sea_orm::{
     DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait, FromQueryResult, IntoActiveModel,
-    Iterable, ModelTrait, QuerySelect, Statement, TransactionTrait, prelude::*,
-    sea_query::IntoCondition,
+    Iterable, ModelTrait, QueryOrder, QuerySelect, SelectColumns, Statement, TransactionTrait,
+    TryGetableMany, prelude::*, sea_query::IntoCondition,
 };
+
+use crate::serde_json_to_sea_orm_vals::{json_to_value_for_column, json_to_value_for_column_arr};
 
 pub trait PostgresCrudableTable: EntityTrait
 where
@@ -341,5 +348,103 @@ where
 
     fn should_use_cache(&self, handle: &Self::SourceHandle) -> bool {
         !handle.is_transaction()
+    }
+}
+
+#[async_trait]
+impl<CRUDTable, SourceHandle, Error>
+    CrudableSourceListExt<<CRUDTable as EntityTrait>::Model, <CRUDTable as EntityTrait>::Column>
+    for CrudablePostgresSource<CRUDTable, SourceHandle, Error>
+where
+    CRUDTable: PostgresCrudableTable,
+    CRUDTable::Model: Crudable
+        + ModelTrait<Entity = CRUDTable>
+        + IntoActiveModel<<CRUDTable as EntityTrait>::ActiveModel>
+        + FromQueryResult,
+    <CRUDTable::Model as Crudable>::Pkey: TryGetableMany,
+    CRUDTable::Column: Iterable + PartialEq,
+    Error: From<sea_orm::DbErr> + Send + Sync + 'static,
+    SourceHandle: Send + Sync + 'static,
+{
+    async fn read_list_to_ids(
+        &self,
+        params: CrudingListParams<CRUDTable::Column>,
+        handle: &mut Self::SourceHandle,
+    ) -> Result<Vec<<CRUDTable::Model as Crudable>::Pkey>, Self::Error> {
+        let mut query = CRUDTable::find().select_only();
+        for col in CRUDTable::get_pkey_columns() {
+            query = query.select_column(col);
+        }
+
+        for filter in params.filters {
+            use cruding_core::list::CrudingListFilterOperators::*;
+
+            query = match filter.op {
+                Eq(v) => query.filter(ColumnTrait::eq(
+                    &filter.column,
+                    json_to_value_for_column(&filter.column, v).unwrap(),
+                )),
+                Neq(v) => query.filter(ColumnTrait::ne(
+                    &filter.column,
+                    json_to_value_for_column(&filter.column, v).unwrap(),
+                )),
+                Gt(v) => query.filter(ColumnTrait::gt(
+                    &filter.column,
+                    json_to_value_for_column(&filter.column, v).unwrap(),
+                )),
+                Ge(v) => query.filter(ColumnTrait::gte(
+                    &filter.column,
+                    json_to_value_for_column(&filter.column, v).unwrap(),
+                )),
+                Lt(v) => query.filter(ColumnTrait::lt(
+                    &filter.column,
+                    json_to_value_for_column(&filter.column, v).unwrap(),
+                )),
+                Le(v) => query.filter(ColumnTrait::lte(
+                    &filter.column,
+                    json_to_value_for_column(&filter.column, v).unwrap(),
+                )),
+                In(v) => query.filter(ColumnTrait::is_in(
+                    &filter.column,
+                    json_to_value_for_column_arr(&filter.column, v).unwrap(),
+                )),
+                NotIn(v) => query.filter(ColumnTrait::is_not_in(
+                    &filter.column,
+                    json_to_value_for_column_arr(&filter.column, v).unwrap(),
+                )),
+            }
+        }
+
+        for sort in params.sorts {
+            query = match sort.order {
+                CrudingListSortOrder::Asc => query.order_by_asc(sort.column),
+                CrudingListSortOrder::Desc => query.order_by_desc(sort.column),
+            }
+        }
+
+        let query = query.into_tuple::<<CRUDTable::Model as Crudable>::Pkey>();
+
+        let returned_items = match handle {
+            PostgresCrudableConnection::Connection(c) => {
+                query
+                    .paginate(c, params.pagination.size as _)
+                    .fetch_page(params.pagination.page as _)
+                    .await
+            }
+            PostgresCrudableConnection::OwnedTransaction(_, tx) => {
+                query
+                    .paginate(tx, params.pagination.size as _)
+                    .fetch_page(params.pagination.page as _)
+                    .await
+            }
+            PostgresCrudableConnection::BorrowedTransaction(tx) => {
+                query
+                    .paginate(tx.as_ref(), params.pagination.size as _)
+                    .fetch_page(params.pagination.page as _)
+                    .await
+            }
+        }?;
+
+        Ok(returned_items)
     }
 }

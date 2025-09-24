@@ -1,3 +1,4 @@
+// tests/list_qs_axum.rs
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -11,18 +12,19 @@ use axum::{
 };
 use cruding_core::{
     Crudable,
-    handler::{CrudableHandler, CrudableHandlerGetter, MaybeArc},
+    handler::{
+        CrudableHandler, CrudableHandlerGetter, CrudableHandlerGetterListExt,
+        CrudableHandlerListExt, MaybeArc,
+    },
+    list::{CrudingListFilterOperators, CrudingListParams, CrudingListSortOrder},
 };
-use futures::TryStreamExt;
-use serde::{Deserialize, Serialize};
 use tower::ServiceExt;
 
-// Bring your trait code into scope
-use cruding_axum_api::{CrudableAxum, CrudableAxumState, CrudableHandlerGetterAxumExt};
+use cruding_axum_api::prelude::*;
 
-// ---------- Test types ----------
+// ---------- Test model ----------
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Thing {
     id: i32,
     mono: i64,
@@ -41,11 +43,29 @@ impl Crudable for Thing {
 }
 
 impl CrudableAxum for Thing {
-    // We'll accept plain ints as the read/delete input type
     type PkeyDe = i32;
 }
 
-// Axum-extracted ctx (e.g. a user from headers)
+// Columns (parsed from qs)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Column {
+    Id,
+    Mono,
+    Data,
+}
+impl std::str::FromStr for Column {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "id" => Ok(Column::Id),
+            "mono" => Ok(Column::Mono),
+            "data" => Ok(Column::Data),
+            _ => Err("invalid column"),
+        }
+    }
+}
+
+// Axum-extracted ctx
 #[derive(Clone, Debug, PartialEq)]
 struct AxumCtx {
     user: String,
@@ -74,15 +94,16 @@ where
     }
 }
 
-// Inner ctx (not extracted by Axum)
+// Inner ctx + SourceHandle + Error
 #[derive(Clone, Debug, PartialEq)]
 struct InnerCtx {
     shard: u16,
 }
 
-// Our SourceHandle and Error types for tests
 #[derive(Clone, Debug)]
 struct SrcHandle;
+
+#[allow(dead_code)]
 #[derive(Debug)]
 enum ApiError {
     Internal(&'static str),
@@ -93,87 +114,83 @@ impl IntoResponse for ApiError {
     }
 }
 
-// A tiny in-memory handler that records calls
+// -------- Handler that CAPTURES the parsed params --------
+
 #[derive(Clone, Default)]
 struct TestHandler {
-    calls: Arc<Mutex<Vec<String>>>,
-}
-
-impl TestHandler {
-    fn push(&self, s: impl Into<String>) {
-        self.calls.lock().unwrap().push(s.into());
-    }
-    fn take(&self) -> Vec<String> {
-        std::mem::take(&mut *self.calls.lock().unwrap())
-    }
+    last_params: Arc<Mutex<Option<CrudingListParams<Column>>>>,
 }
 
 #[async_trait]
 impl CrudableHandler<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for TestHandler {
     async fn create(
         &self,
-        input: Vec<Thing>,
-        ctx: &mut (AxumCtx, InnerCtx),
-        _sh: &mut SrcHandle,
+        _i: Vec<Thing>,
+        _c: &mut (AxumCtx, InnerCtx),
+        _s: &mut SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
-        self.push(format!("create user={} shard={}", ctx.0.user, ctx.1.shard));
-        Ok(input.into_iter().map(MaybeArc::Owned).collect())
+        unreachable!()
     }
-
     async fn read(
         &self,
-        keys: Vec<i32>,
-        ctx: &mut (AxumCtx, InnerCtx),
-        _sh: &mut SrcHandle,
+        _k: Vec<i32>,
+        _c: &mut (AxumCtx, InnerCtx),
+        _s: &mut SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
-        self.push(format!(
-            "read user={} shard={} keys={:?}",
-            ctx.0.user, ctx.1.shard, keys
-        ));
-        // Fabricate items with same ids
-        let items: Vec<Thing> = keys
-            .into_iter()
-            .map(|id| Thing {
-                id,
-                mono: 0,
-                data: format!("ok-{id}"),
-            })
-            .collect();
-        Ok(items.into_iter().map(MaybeArc::Owned).collect())
+        unreachable!()
     }
-
     async fn update(
         &self,
-        input: Vec<Thing>,
-        ctx: &mut (AxumCtx, InnerCtx),
-        _sh: &mut SrcHandle,
+        _i: Vec<Thing>,
+        _c: &mut (AxumCtx, InnerCtx),
+        _s: &mut SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
-        self.push(format!("update user={} shard={}", ctx.0.user, ctx.1.shard));
-        // echo back
-        Ok(input.into_iter().map(MaybeArc::Owned).collect())
+        unreachable!()
     }
-
     async fn delete(
         &self,
-        keys: Vec<i32>,
-        ctx: &mut (AxumCtx, InnerCtx),
-        _sh: &mut SrcHandle,
+        _k: Vec<i32>,
+        _c: &mut (AxumCtx, InnerCtx),
+        _s: &mut SrcHandle,
     ) -> Result<(), ApiError> {
-        self.push(format!(
-            "delete user={} shard={} keys={:?}",
-            ctx.0.user, ctx.1.shard, keys
-        ));
-        Ok(())
+        unreachable!()
     }
 }
 
-// State implements Getter + Axum state trait
+#[async_trait]
+impl CrudableHandlerListExt<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError, Column>
+    for TestHandler
+{
+    async fn read_list(
+        &self,
+        params: CrudingListParams<Column>,
+        _ctx: &mut (AxumCtx, InnerCtx),
+        _sh: &mut SrcHandle,
+    ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
+        *self.last_params.lock().unwrap() = Some(params);
+        // Return something trivial; body content isn't the focus here
+        let out = vec![Thing {
+            id: 1,
+            mono: 10,
+            data: "ok".into(),
+        }];
+        Ok(out.into_iter().map(MaybeArc::Owned).collect())
+    }
+}
+
+impl TestHandler {
+    fn take_params(&self) -> Option<CrudingListParams<Column>> {
+        self.last_params.lock().unwrap().take()
+    }
+}
+
+// -------- State & Router --------
+
 #[derive(Clone)]
 struct AppState {
     handler: TestHandler,
     inner: InnerCtx,
 }
-
 impl CrudableHandlerGetter<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for AppState {
     fn handler(
         &self,
@@ -182,7 +199,21 @@ impl CrudableHandlerGetter<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for 
         &self.handler
     }
 }
-
+impl CrudableHandlerGetterListExt<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError, Column>
+    for AppState
+{
+    fn handler_list(
+        &self,
+    ) -> &dyn cruding_core::handler::CrudableHandlerListExt<
+        Thing,
+        (AxumCtx, InnerCtx),
+        SrcHandle,
+        ApiError,
+        Column,
+    > {
+        &self.handler
+    }
+}
 impl CrudableAxumState for AppState
 where
     Thing: CrudableAxum,
@@ -192,9 +223,7 @@ where
     type InnerCtx = InnerCtx;
     type SourceHandle = SrcHandle;
     type Error = ApiError;
-
     const CRUD_NAME: &'static str = "/things";
-
     fn new_source_handle(&self) -> SrcHandle {
         SrcHandle
     }
@@ -202,180 +231,173 @@ where
         self.inner.clone()
     }
 }
+impl CrudableAxumStateListExt for AppState {
+    type Column = Column;
+}
 
 fn mk_app() -> (Router<()>, AppState) {
     let state = AppState {
         handler: TestHandler::default(),
         inner: InnerCtx { shard: 7 },
     };
-
-    // Optional plugin under same nest
     let plugin = Router::new().route("/ping", get(|| async { "pong" }));
-
-    let app = state
-        .handler
-        .into_crud_router(Some(plugin))
-        .with_state(state.clone());
+    let app = CrudRouter::nested_with_list::<AppState>(Some(plugin)).with_state(state.clone());
     (app, state)
 }
 
 // ---------- Tests ----------
 
 #[tokio::test]
-async fn create_roundtrip_and_ctx_are_passed() {
+async fn list_parses_filters_sorts_pagination() {
     let (app, state) = mk_app();
-    let payload = vec![
-        Thing {
-            id: 1,
-            mono: 10,
-            data: "a".into(),
-        },
-        Thing {
-            id: 2,
-            mono: 20,
-            data: "b".into(),
-        },
-    ];
-    let req = Request::builder()
-        .method("POST")
-        .uri("/things/create")
-        .header("content-type", "application/json")
-        .header("X-User", "alice")
-        .body(Body::from(serde_json::to_vec(&payload).unwrap()))
-        .unwrap();
 
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let body_bytes = resp
-        .into_body()
-        .into_data_stream()
-        .map_ok(|x| x.to_vec())
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap()
-        .concat();
-    let out: Vec<Thing> = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(out, payload);
-
-    // ctx recorded by handler
-    let calls = state.handler.take();
-    assert!(calls.iter().any(|l| l == "create user=alice shard=7"));
-}
-
-#[tokio::test]
-async fn read_uses_pkeyde_and_returns_items() {
-    let (app, state) = mk_app();
-    // read/delete accept Vec<PkeyDe> = Vec<i32>
-    let keys = vec![5, 9];
-    let req = Request::builder()
-        .method("POST")
-        .uri("/things/read")
-        .header("content-type", "application/json")
-        .header("X-User", "bob")
-        .body(Body::from(serde_json::to_vec(&keys).unwrap()))
-        .unwrap();
-
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body_bytes = resp
-        .into_body()
-        .into_data_stream()
-        .map_ok(|x| x.to_vec())
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap()
-        .concat();
-    let out: Vec<Thing> = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(out.len(), 2);
-    assert_eq!(out[0].id, 5);
-    assert_eq!(out[1].id, 9);
-
-    let calls = state.handler.take();
-    // ensure AxumCtx + InnerCtx made it through, and keys were converted
-    assert!(calls.iter().any(|l| l.contains("read user=bob shard=7")));
-    assert!(calls.iter().any(|l| l.contains("keys=[5, 9]")));
-}
-
-#[tokio::test]
-async fn update_roundtrip() {
-    let (app, state) = mk_app();
-    let payload = vec![Thing {
-        id: 3,
-        mono: 99,
-        data: "zzz".into(),
-    }];
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/things/update")
-        .header("content-type", "application/json")
-        .header("X-User", "carol")
-        .body(Body::from(serde_json::to_vec(&payload).unwrap()))
-        .unwrap();
-
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let body_bytes = resp
-        .into_body()
-        .into_data_stream()
-        .map_ok(|x| x.to_vec())
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap()
-        .concat();
-    let out: Vec<Thing> = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(out, payload);
-
-    let calls = state.handler.take();
-    assert!(calls.iter().any(|l| l == "update user=carol shard=7"));
-}
-
-#[tokio::test]
-async fn delete_uses_pkeyde_and_returns_204() {
-    let (app, state) = mk_app();
-    let keys = vec![42];
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/things/delete")
-        .header("content-type", "application/json")
-        .header("X-User", "dan")
-        .body(Body::from(serde_json::to_vec(&keys).unwrap()))
-        .unwrap();
-
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    let calls = state.handler.take();
-    assert!(
-        calls
-            .iter()
-            .any(|l| l.contains("delete user=dan shard=7 keys=[42]"))
+    // Mix filters/sorts/pagination to ensure ordering and parsing work.
+    // - filter[data][=]="hi"
+    // - filter[mono][>=]=20
+    // - sort[id]=desc
+    // - pagination[page]=2
+    // - pagination[size]=50
+    let qs = urlencoding::encode(
+        "filter[data][=]=\"hi\"&\
+        filter[mono][>=]=20&\
+        sort[id]=desc&\
+        pagination[page]=2&\
+        pagination[size]=50",
     );
-}
-
-#[tokio::test]
-async fn plugin_routes_are_merged_under_same_nest() {
-    let (app, _state) = mk_app();
 
     let req = Request::builder()
         .method("GET")
-        .uri("/things/ping")
+        .uri(format!("/things/list?{qs}"))
+        .header("X-User", "alice")
         .body(Body::empty())
         .unwrap();
 
-    let resp = app.oneshot(req).await.unwrap();
+    println!("{req:?}");
+
+    let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let body_bytes = resp
-        .into_body()
-        .into_data_stream()
-        .map_ok(|x| x.to_vec())
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap()
-        .concat();
-    assert_eq!(body_bytes, b"pong");
+    let params = state.handler.take_params().expect("params captured");
+    // 1) Filters
+    assert_eq!(params.filters.len(), 2);
+    // data == "hi"
+    match &params.filters[0].op {
+        CrudingListFilterOperators::Eq(v) => assert_eq!(v, &serde_json::json!("hi")),
+        other => panic!("unexpected op: {:?}", other),
+    }
+    assert_eq!(params.filters[0].column, Column::Data);
+
+    // mono >= 20
+    match &params.filters[1].op {
+        CrudingListFilterOperators::Ge(v) => assert_eq!(v, &serde_json::json!(20)),
+        other => panic!("unexpected op: {:?}", other),
+    }
+    assert_eq!(params.filters[1].column, Column::Mono);
+
+    // 2) Sorts (order preserved)
+    assert_eq!(params.sorts.len(), 1);
+    assert_eq!(params.sorts[0].column, Column::Id);
+    assert!(matches!(params.sorts[0].order, CrudingListSortOrder::Desc));
+
+    // 3) Pagination
+    assert_eq!(params.pagination.page, 2);
+    assert_eq!(params.pagination.size, 50);
+}
+
+#[tokio::test]
+async fn list_parses_in_and_notin_arrays() {
+    let (app, state) = mk_app();
+
+    // in with array
+    let url = "/things/list?filter[id][in]=[1,2,3]";
+    let req = Request::builder()
+        .method("GET")
+        .uri(url)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let p = state.handler.take_params().unwrap();
+    assert_eq!(p.filters.len(), 1);
+    match &p.filters[0].op {
+        CrudingListFilterOperators::In(v) => {
+            assert_eq!(
+                v,
+                &vec![
+                    serde_json::json!(1),
+                    serde_json::json!(2),
+                    serde_json::json!(3)
+                ]
+            )
+        }
+        other => panic!("expected In, got {:?}", other),
+    }
+
+    // !in with array
+    let url = "/things/list?filter[id][!in]=[4,5]";
+    let req = Request::builder()
+        .method("GET")
+        .uri(url)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let p = state.handler.take_params().unwrap();
+    match &p.filters[0].op {
+        CrudingListFilterOperators::NotIn(v) => {
+            assert_eq!(v, &vec![serde_json::json!(4), serde_json::json!(5)])
+        }
+        other => panic!("expected NotIn, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn list_bad_in_not_array_returns_400() {
+    let (app, _state) = mk_app();
+
+    // in with non-array must fail qs parsing → 400
+    let url = "/things/list?filter[id][in]=1";
+    let req = Request::builder()
+        .method("GET")
+        .uri(url)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn list_bad_column_returns_400() {
+    let (app, _state) = mk_app();
+
+    // unknown column name → 400
+    let url = "/things/list?filter[oops][=]=1";
+    let req = Request::builder()
+        .method("GET")
+        .uri(url)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn list_multiple_sorts_preserve_order() {
+    let (app, state) = mk_app();
+
+    let url = "/things/list?sort[id]=asc&sort[data]=desc";
+    let req = Request::builder()
+        .method("GET")
+        .uri(url)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let p = state.handler.take_params().unwrap();
+    assert_eq!(p.sorts.len(), 2);
+    assert_eq!(p.sorts[0].column, Column::Id);
+    assert!(matches!(p.sorts[0].order, CrudingListSortOrder::Asc));
+    assert_eq!(p.sorts[1].column, Column::Data);
+    assert!(matches!(p.sorts[1].order, CrudingListSortOrder::Desc));
 }

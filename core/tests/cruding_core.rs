@@ -45,6 +45,7 @@ struct MemSource {
 #[derive(Default)]
 struct Handle; // no-op transaction/context
 
+#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 enum DbError {
     #[error("db_error")]
@@ -106,6 +107,7 @@ fn new_cache() -> Cache<u64, Arc<ArcSwap<Item>>> {
         .build()
 }
 
+#[allow(clippy::type_complexity)]
 fn handler_with(
     source: MemSource,
     cache: Cache<u64, Arc<ArcSwap<Item>>>,
@@ -115,6 +117,7 @@ fn handler_with(
 
 #[derive(Default)]
 struct TestCtx;
+#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 enum TestError {
     #[error("db: {0:?}")]
@@ -134,8 +137,8 @@ async fn create_then_read_hits_cache() {
     };
     let handler = handler_with(source, cache);
 
-    let mut ctx = TestCtx::default();
-    let mut h = Handle::default();
+    let mut ctx = TestCtx;
+    let mut h = Handle;
 
     // Create
     let created = handler
@@ -187,7 +190,7 @@ async fn read_miss_then_populates_cache() {
     };
     // Preload DB only
     {
-        let mut h = Handle::default();
+        let mut h = Handle;
         source
             .create(
                 vec![Item {
@@ -202,8 +205,8 @@ async fn read_miss_then_populates_cache() {
     }
 
     let handler = handler_with(source, cache);
-    let mut ctx = TestCtx::default();
-    let mut h = Handle::default();
+    let mut ctx = TestCtx;
+    let mut h = Handle;
 
     // First read: miss → fetch → cache
     let out1 = handler.read(vec![2], &mut ctx, &mut h).await.unwrap();
@@ -223,8 +226,8 @@ async fn update_obeys_monotonic_replace() {
     };
     let handler = handler_with(source, cache);
 
-    let mut ctx = TestCtx::default();
-    let mut h = Handle::default();
+    let mut ctx = TestCtx;
+    let mut h = Handle;
 
     // Create v1
     handler
@@ -306,8 +309,8 @@ async fn delete_invalidates_cache() {
     };
     let handler = handler_with(source, cache);
 
-    let mut ctx = TestCtx::default();
-    let mut h = Handle::default();
+    let mut ctx = TestCtx;
+    let mut h = Handle;
 
     handler
         .create(
@@ -343,8 +346,8 @@ async fn use_cache_false_bypasses_map() {
     };
     let handler = handler_with(source, cache);
 
-    let mut ctx = TestCtx::default();
-    let mut h = Handle::default();
+    let mut ctx = TestCtx;
+    let mut h = Handle;
 
     // Create returns Owned (not Arced) and does not populate cache
     let created = handler
@@ -414,8 +417,8 @@ async fn hooks_are_invoked_and_can_transform() {
             Ok(())
         }));
 
-    let mut ctx = TestCtx::default();
-    let mut h = Handle::default();
+    let mut ctx = TestCtx;
+    let mut h = Handle;
 
     // Create (before_create adds +100)
     let created = handler
@@ -480,8 +483,8 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
     };
     let handler = Arc::new(handler_with(source, cache));
 
-    let mut ctx = TestCtx::default();
-    let mut h = Handle::default();
+    let mut ctx = TestCtx;
+    let mut h = Handle;
 
     // Seed initial value
     handler
@@ -506,8 +509,8 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
     let writers = versions.into_iter().map(|ver| {
         let handler = handler.clone();
         tokio::spawn(async move {
-            let mut ctx = TestCtx::default();
-            let mut h = Handle::default();
+            let mut ctx = TestCtx;
+            let mut h = Handle;
             // NOTE: update returns the attempted value (Arced), not necessarily the winner.
             // We don't assert on it here—correctness is validated by readers and final state.
             let _ = handler
@@ -530,8 +533,8 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
         tokio::spawn(async move {
             let mut last = 0i64;
             for _ in 0..1000 {
-                let mut ctx = TestCtx::default();
-                let mut h = Handle::default();
+                let mut ctx = TestCtx;
+                let mut h = Handle;
                 let got = handler.read(vec![7], &mut ctx, &mut h).await.unwrap();
                 if let Some(MaybeArc::Arced(v)) = got.into_iter().next() {
                     // Should never regress due to ArcSwap::rcu monotonic replace
@@ -560,8 +563,8 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
     sleep(Duration::from_millis(10)).await;
 
     // Final state must be the max version
-    let mut ctx = TestCtx::default();
-    let mut h = Handle::default();
+    let mut ctx = TestCtx;
+    let mut h = Handle;
     let final_read = handler.read(vec![7], &mut ctx, &mut h).await.unwrap();
     let final_item = match &final_read[0] {
         MaybeArc::Arced(v) => v.clone(),

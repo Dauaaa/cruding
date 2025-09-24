@@ -58,7 +58,7 @@ where
     <Self as EntityTrait>::Column: Iterable + PartialEq,
 {
     fn get_pkey_filter(keys: &[<Model as Crudable>::Pkey]) -> impl IntoCondition {
-        Column::Id.is_in(keys.iter().copied().collect::<Vec<_>>())
+        Column::Id.is_in(keys.to_vec())
     }
 
     fn get_pkey_columns() -> Vec<Self::Column> {
@@ -315,17 +315,17 @@ async fn use_cache_policy_is_false_inside_tx_true_otherwise() {
 
     // plain connection => use cache
     let h1 = src.new_source_handle();
-    assert_eq!(CrudableSource::<Model>::should_use_cache(&src, &h1), true);
+    assert!(CrudableSource::<Model>::should_use_cache(&src, &h1));
 
     // owned transaction => bypass cache
     let mut h2 = src.new_source_handle();
     h2.maybe_begin_transaction().await.unwrap();
-    assert_eq!(CrudableSource::<Model>::should_use_cache(&src, &h2), false);
+    assert!(!CrudableSource::<Model>::should_use_cache(&src, &h2));
 
     // borrowed transaction => bypass cache
     let tx = conn.begin().await.unwrap();
     let h3 = PostgresCrudableConnection::BorrowedTransaction(Arc::new(tx));
-    assert_eq!(CrudableSource::<Model>::should_use_cache(&src, &h3), false);
+    assert!(!CrudableSource::<Model>::should_use_cache(&src, &h3));
 }
 
 #[tokio::test]

@@ -35,6 +35,10 @@ regex = { workspace = true }
 fake = { workspace = true }
 futures = { workspace = true }
 dashmap = { workspace = true }
+cruding_qs_list_filter = { workspace = true }
+rust_decimal = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

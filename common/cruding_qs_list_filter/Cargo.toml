@@ -1,0 +1,13 @@
+[package]
+name = "cruding_qs_list_filter"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+nom = { workspace = true }
+serde_json = { workspace = true }
+cruding_core = { workspace = true }
