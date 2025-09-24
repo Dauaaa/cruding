@@ -60,7 +60,7 @@ schemars = { version = "0.8", features = ["derive"] }
 nom = "8.0.0"
 urlencoding = "2.1.3"
 
-cruding_core = { path = "./core", version = "0.2.0" }
-cruding_pg_source = { path = "./sources/postgres", version = "0.2.0"  }
-cruding_axum_api = { path = "./apis/axum", version = "0.2.0"  }
-cruding_qs_list_filter = { path = "./common/cruding_qs_list_filter", version = "0.2.0" }
+cruding_core = { path = "./core", version = "0.2.1" }
+cruding_pg_source = { path = "./sources/postgres", version = "0.2.1"  }
+cruding_axum_api = { path = "./apis/axum", version = "0.2.1"  }
+cruding_qs_list_filter = { path = "./common/cruding_qs_list_filter", version = "0.2.1" }

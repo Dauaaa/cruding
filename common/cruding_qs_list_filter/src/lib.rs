@@ -60,12 +60,9 @@ fn parse_filter<'a, Column>(
     input: &'a str,
     column_from_str: &impl Fn(&str) -> Option<Column>,
 ) -> IResult<&'a str, CrudingListFilter<Column>> {
-    println!("{input}");
     let (input, column) = parse_column(input, column_from_str)?;
-    println!("{input} Now op");
 
     let (input, op) = parse_filter_operator(input)?;
-    println!("{input}");
 
     Ok((input, CrudingListFilter { column, op }))
 }
@@ -74,7 +71,6 @@ fn parse_filter_operator<'a>(input: &'a str) -> IResult<&'a str, CrudingListFilt
     let (input, op_str) = delimited(
         tag("["),
         move |input: &'a str| {
-            println!("HELLO {input}");
             let (input, op) = alt((
                 tag("="),
                 tag("!="),
@@ -87,21 +83,16 @@ fn parse_filter_operator<'a>(input: &'a str) -> IResult<&'a str, CrudingListFilt
             ))
             .parse(input)?;
 
-            println!("HELLO {input}");
-
             Ok((input, op))
         },
         tag("]"),
     )
     .parse(input)?;
 
-    println!("HELLO {input}");
     let (input, _) = char('=').parse(input)?;
 
-    println!("NOW JSON {input}");
     let (input, op_rhs) = json_parser::json().parse(input)?;
 
-    println!("HELLO {input}");
     let op = match op_str {
         "=" => CrudingListFilterOperators::Eq(op_rhs),
         "!=" => CrudingListFilterOperators::Neq(op_rhs),
