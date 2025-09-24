@@ -159,9 +159,9 @@ where
 }
 
 #[async_trait]
-impl<CRUD, Map, Source, Ctx, SourceHandle, Error, DbError>
+impl<CRUD, Map, Source, Ctx, SourceHandle, Error, DbError, Column>
     CrudableHandler<CRUD, Ctx, SourceHandle, Error>
-    for CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error>
+    for CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error, Column>
 where
     CRUD: Crudable,
     Map: CrudableMap<CRUD>,
