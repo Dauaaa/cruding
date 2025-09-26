@@ -1,6 +1,9 @@
 pub mod serde_json_to_sea_orm_vals;
 
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    marker::PhantomData,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use async_trait::async_trait;
 use cruding_core::{
@@ -12,6 +15,7 @@ use sea_orm::{
     Iterable, ModelTrait, QueryOrder, QuerySelect, SelectColumns, Statement, TransactionTrait,
     TryGetableMany, prelude::*, sea_query::IntoCondition,
 };
+use tokio::sync::RwLock;
 
 use crate::serde_json_to_sea_orm_vals::{json_to_value_for_column, json_to_value_for_column_arr};
 
@@ -37,31 +41,66 @@ pub struct CrudablePostgresSource<
         + FromQueryResult,
 {
     conn: DatabaseConnection,
-    lock_for_update: bool,
+    lock_for_update: Arc<AtomicBool>,
     _p: PhantomData<(CRUDTable, Ctx, Error)>,
 }
 
-pub enum PostgresCrudableConnection {
+impl<CRUDTable: PostgresCrudableTable, Ctx: Send + Sync + 'static, Error: From<sea_orm::DbErr>>
+    Clone for CrudablePostgresSource<CRUDTable, Ctx, Error>
+where
+    <CRUDTable as EntityTrait>::Column: Iterable + PartialEq,
+    <CRUDTable as EntityTrait>::Model: Crudable
+        + ModelTrait<Entity = CRUDTable>
+        + IntoActiveModel<<CRUDTable as EntityTrait>::ActiveModel>
+        + FromQueryResult,
+{
+    fn clone(&self) -> Self {
+        Self {
+            conn: self.conn.clone(),
+            lock_for_update: self.lock_for_update.clone(),
+            _p: self._p,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PostgresCrudableConnection {
+    conn: Arc<RwLock<PostgresCrudableConnectionInner>>,
+}
+
+impl PostgresCrudableConnection {
+    pub fn new(conn: PostgresCrudableConnectionInner) -> Self {
+        Self {
+            conn: Arc::new(RwLock::new(conn)),
+        }
+    }
+
+    pub fn get_conn(&self) -> &RwLock<PostgresCrudableConnectionInner> {
+        self.conn.as_ref()
+    }
+}
+
+pub enum PostgresCrudableConnectionInner {
     /// Represents an owned connection by the context that wasn't requested to start a
     /// transaction
     Connection(DatabaseConnection),
     /// Represents an owned connection by the context that was requested to start a
     /// transaction
-    OwnedTransaction(DatabaseConnection, DatabaseTransaction),
+    OwnedTransaction(DatabaseConnection, Arc<DatabaseTransaction>),
     /// Represents a "borrowed" connection by the conext that comes from a caller that already has
     /// a transaction underway
     BorrowedTransaction(Arc<DatabaseTransaction>),
 }
 
-impl PostgresCrudableConnection {
+impl PostgresCrudableConnectionInner {
     pub fn is_transaction(&self) -> bool {
         !matches!(self, Self::Connection(_))
     }
 
     /// Will begin a transaction if the connection is owned by the context
     pub async fn maybe_begin_transaction(&mut self) -> Result<(), DbErr> {
-        if let PostgresCrudableConnection::Connection(c) = self {
-            *self = Self::OwnedTransaction(c.clone(), c.begin().await?);
+        if let Self::Connection(c) = self {
+            *self = Self::OwnedTransaction(c.clone(), Arc::new(c.begin().await?));
         }
 
         Ok(())
@@ -71,7 +110,7 @@ impl PostgresCrudableConnection {
     pub async fn maybe_commit(&mut self) -> Result<(), DbErr> {
         let mut conn = None;
 
-        if let PostgresCrudableConnection::OwnedTransaction(c, _) = self {
+        if let Self::OwnedTransaction(c, _) = self {
             conn = Some(c.clone());
         };
 
@@ -80,17 +119,18 @@ impl PostgresCrudableConnection {
             else {
                 unreachable!()
             };
-            tx.commit().await?;
+            Arc::try_unwrap(tx).map_err(|_| DbErr::Custom("Failed to finish an OwnedTransaction this means something still holds a reference to it...".to_string()))?.
+            commit().await?;
         }
 
         Ok(())
     }
 
-    pub fn get_conn(&self) -> &(dyn ConnectionTrait + Send + Sync) {
+    pub async fn get_conn(&self) -> &(dyn ConnectionTrait + Send + Sync) {
         match self {
-            PostgresCrudableConnection::Connection(c) => c,
-            PostgresCrudableConnection::OwnedTransaction(_, tx) => tx,
-            PostgresCrudableConnection::BorrowedTransaction(tx) => tx.as_ref(),
+            Self::Connection(c) => c,
+            Self::OwnedTransaction(_, tx) => tx.as_ref(),
+            Self::BorrowedTransaction(tx) => tx.as_ref(),
         }
     }
 }
@@ -103,13 +143,14 @@ where
         + IntoActiveModel<<CRUDTable as EntityTrait>::ActiveModel>
         + FromQueryResult,
     CRUDTable::Column: Iterable + PartialEq,
+    CRUDTable::ActiveModel: Send,
     Error: From<sea_orm::DbErr> + Send + Sync + 'static,
     Ctx: Send + Sync + 'static,
 {
     pub fn new(conn: DatabaseConnection, lock_for_update: bool) -> Self {
         Self {
             conn,
-            lock_for_update,
+            lock_for_update: Arc::new(lock_for_update.into()),
             _p: PhantomData,
         }
     }
@@ -119,7 +160,11 @@ where
     }
 
     pub fn new_source_handle(&self) -> PostgresCrudableConnection {
-        PostgresCrudableConnection::Connection(self.conn.clone())
+        PostgresCrudableConnection {
+            conn: Arc::new(RwLock::new(PostgresCrudableConnectionInner::Connection(
+                self.conn.clone(),
+            ))),
+        }
     }
 }
 
@@ -133,8 +178,9 @@ where
         + IntoActiveModel<<CRUDTable as EntityTrait>::ActiveModel>
         + FromQueryResult,
     CRUDTable::Column: Iterable + PartialEq,
+    CRUDTable::ActiveModel: Send,
     Error: From<sea_orm::DbErr> + Send + Sync + 'static,
-    SourceHandle: Send + Sync + 'static,
+    SourceHandle: Clone + Send + Sync + 'static,
 {
     type Error = Error;
     type SourceHandle = PostgresCrudableConnection;
@@ -143,7 +189,7 @@ where
     async fn create(
         &self,
         items: Vec<<CRUDTable as EntityTrait>::Model>,
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
         let active_models: Vec<<CRUDTable as EntityTrait>::ActiveModel> = items
             .into_iter()
@@ -152,12 +198,12 @@ where
 
         let q = CRUDTable::insert_many(active_models);
 
-        let returned_items = match handle {
-            PostgresCrudableConnection::Connection(c) => q.exec_with_returning_many(c).await,
-            PostgresCrudableConnection::OwnedTransaction(_, tx) => {
-                q.exec_with_returning_many(tx).await
+        let returned_items = match &*handle.conn.read().await {
+            PostgresCrudableConnectionInner::Connection(c) => q.exec_with_returning_many(c).await,
+            PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => {
+                q.exec_with_returning_many(tx.as_ref()).await
             }
-            PostgresCrudableConnection::BorrowedTransaction(tx) => {
+            PostgresCrudableConnectionInner::BorrowedTransaction(tx) => {
                 q.exec_with_returning_many(tx.as_ref()).await
             }
         }?;
@@ -169,15 +215,15 @@ where
     async fn read(
         &self,
         keys: &[<<CRUDTable as EntityTrait>::Model as Crudable>::Pkey],
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
         let q =
             CRUDTable::find().filter(<CRUDTable as PostgresCrudableTable>::get_pkey_filter(keys));
 
-        let returned_items = match handle {
-            PostgresCrudableConnection::Connection(c) => q.all(c).await,
-            PostgresCrudableConnection::OwnedTransaction(_, tx) => q.all(tx).await,
-            PostgresCrudableConnection::BorrowedTransaction(tx) => q.all(tx.as_ref()).await,
+        let returned_items = match &*handle.conn.read().await {
+            PostgresCrudableConnectionInner::Connection(c) => q.all(c).await,
+            PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => q.all(tx.as_ref()).await,
+            PostgresCrudableConnectionInner::BorrowedTransaction(tx) => q.all(tx.as_ref()).await,
         }?;
 
         Ok(returned_items)
@@ -187,7 +233,7 @@ where
     async fn update(
         &self,
         items: Vec<<CRUDTable as EntityTrait>::Model>,
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
         if items.is_empty() {
             return Ok(Vec::new());
@@ -298,10 +344,14 @@ where
             Ok(out)
         }
 
-        let returned = match handle {
-            PostgresCrudableConnection::Connection(c) => run(c, stmt).await?,
-            PostgresCrudableConnection::OwnedTransaction(_, tx) => run(tx, stmt).await?,
-            PostgresCrudableConnection::BorrowedTransaction(tx) => run(tx.as_ref(), stmt).await?,
+        let returned = match &*handle.conn.read().await {
+            PostgresCrudableConnectionInner::Connection(c) => run(c, stmt).await?,
+            PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => {
+                run(tx.as_ref(), stmt).await?
+            }
+            PostgresCrudableConnectionInner::BorrowedTransaction(tx) => {
+                run(tx.as_ref(), stmt).await?
+            }
         };
 
         Ok(returned)
@@ -310,7 +360,7 @@ where
     async fn read_for_update(
         &self,
         keys: &[<<CRUDTable as EntityTrait>::Model as Crudable>::Pkey],
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
         let mut q =
             CRUDTable::find().filter(<CRUDTable as PostgresCrudableTable>::get_pkey_filter(keys));
@@ -320,7 +370,12 @@ where
             q = q.order_by_asc(col);
         }
 
-        if self.lock_for_update {
+        let mut handle = handle.conn.write().await;
+
+        if self
+            .lock_for_update
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             handle.maybe_begin_transaction().await?;
 
             if handle.is_transaction() {
@@ -328,10 +383,10 @@ where
             }
         }
 
-        let returned_items = match handle {
-            PostgresCrudableConnection::Connection(c) => q.all(c).await,
-            PostgresCrudableConnection::OwnedTransaction(_, tx) => q.all(tx).await,
-            PostgresCrudableConnection::BorrowedTransaction(tx) => q.all(tx.as_ref()).await,
+        let returned_items = match &*handle {
+            PostgresCrudableConnectionInner::Connection(c) => q.all(c).await,
+            PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => q.all(tx.as_ref()).await,
+            PostgresCrudableConnectionInner::BorrowedTransaction(tx) => q.all(tx.as_ref()).await,
         }?;
 
         handle.maybe_commit().await?;
@@ -343,15 +398,17 @@ where
     async fn delete(
         &self,
         keys: &[<<CRUDTable as EntityTrait>::Model as Crudable>::Pkey],
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
         let q = CRUDTable::delete_many()
             .filter(<CRUDTable as PostgresCrudableTable>::get_pkey_filter(keys));
 
-        let returned_items = match handle {
-            PostgresCrudableConnection::Connection(c) => q.exec_with_returning(c).await,
-            PostgresCrudableConnection::OwnedTransaction(_, tx) => q.exec_with_returning(tx).await,
-            PostgresCrudableConnection::BorrowedTransaction(tx) => {
+        let returned_items = match &*handle.conn.read().await {
+            PostgresCrudableConnectionInner::Connection(c) => q.exec_with_returning(c).await,
+            PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => {
+                q.exec_with_returning(tx.as_ref()).await
+            }
+            PostgresCrudableConnectionInner::BorrowedTransaction(tx) => {
                 q.exec_with_returning(tx.as_ref()).await
             }
         }?;
@@ -359,8 +416,8 @@ where
         Ok(returned_items)
     }
 
-    fn should_use_cache(&self, handle: &Self::SourceHandle) -> bool {
-        !handle.is_transaction()
+    async fn should_use_cache(&self, handle: Self::SourceHandle) -> bool {
+        !handle.conn.read().await.is_transaction()
     }
 }
 
@@ -376,13 +433,14 @@ where
         + FromQueryResult,
     <CRUDTable::Model as Crudable>::Pkey: TryGetableMany,
     CRUDTable::Column: Iterable + PartialEq,
+    CRUDTable::ActiveModel: Send,
     Error: From<sea_orm::DbErr> + Send + Sync + 'static,
-    SourceHandle: Send + Sync + 'static,
+    SourceHandle: Clone + Send + Sync + 'static,
 {
     async fn read_list_to_ids(
         &self,
         params: CrudingListParams<CRUDTable::Column>,
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<<CRUDTable::Model as Crudable>::Pkey>, Self::Error> {
         let mut query = CRUDTable::find().select_only();
         for col in CRUDTable::get_pkey_columns() {
@@ -437,20 +495,20 @@ where
 
         let query = query.into_tuple::<<CRUDTable::Model as Crudable>::Pkey>();
 
-        let returned_items = match handle {
-            PostgresCrudableConnection::Connection(c) => {
+        let returned_items = match &*handle.conn.read().await {
+            PostgresCrudableConnectionInner::Connection(c) => {
                 query
                     .paginate(c, params.pagination.size as _)
                     .fetch_page(params.pagination.page as _)
                     .await
             }
-            PostgresCrudableConnection::OwnedTransaction(_, tx) => {
+            PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => {
                 query
-                    .paginate(tx, params.pagination.size as _)
+                    .paginate(tx.as_ref(), params.pagination.size as _)
                     .fetch_page(params.pagination.page as _)
                     .await
             }
-            PostgresCrudableConnection::BorrowedTransaction(tx) => {
+            PostgresCrudableConnectionInner::BorrowedTransaction(tx) => {
                 query
                     .paginate(tx.as_ref(), params.pagination.size as _)
                     .fetch_page(params.pagination.page as _)

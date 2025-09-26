@@ -22,7 +22,7 @@ pub fn parse_cruding_qs_list_filter<'a, Column>(
     const PAGINATION: &str = "pagination";
     let mut params = CrudingListParams {
         filters: vec![],
-        pagination: CrudingListPagination { page: 1, size: 100 },
+        pagination: CrudingListPagination { page: 0, size: 100 },
         sorts: vec![],
     };
 
@@ -258,7 +258,7 @@ mod tests {
         assert_eq!(rest, "");
         assert_eq!(params.filters.len(), 1);
         assert_eq!(params.sorts.len(), 0);
-        assert_eq!(params.pagination.page, 1);
+        assert_eq!(params.pagination.page, 0);
         assert_eq!(params.pagination.size, 100);
 
         let expected = CrudingListFilterOperators::Eq(json!(1));

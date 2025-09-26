@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use cruding_core::{Crudable, CrudableSource};
 use cruding_pg_source::{
-    CrudablePostgresSource, PostgresCrudableConnection, PostgresCrudableTable,
+    CrudablePostgresSource, PostgresCrudableConnection, PostgresCrudableConnectionInner, PostgresCrudableTable
 };
 
 use sea_orm::{
@@ -116,7 +116,7 @@ async fn create_returns_inserted_rows() {
     let conn = connect_and_prepare().await;
     let src = source(false, conn);
 
-    let mut handle = src.new_source_handle();
+    let handle = src.new_source_handle();
     let rows = vec![
         Model {
             id: 1,
@@ -130,7 +130,7 @@ async fn create_returns_inserted_rows() {
         },
     ];
 
-    let out = CrudableSource::<Model>::create(&src, rows.clone(), &mut handle)
+    let out = CrudableSource::<Model>::create(&src, rows.clone(), handle)
         .await
         .unwrap();
     assert_eq!(out, rows);
@@ -141,7 +141,7 @@ async fn create_returns_inserted_rows() {
 async fn read_filters_by_keys() {
     let conn = connect_and_prepare().await;
     let src = source(false, conn.clone());
-    let mut h = src.new_source_handle();
+    let h = src.new_source_handle();
 
     let seed = vec![
         Model {
@@ -160,12 +160,12 @@ async fn read_filters_by_keys() {
             val: 333,
         },
     ];
-    CrudableSource::<Model>::create(&src, seed, &mut h)
+    CrudableSource::<Model>::create(&src, seed, h)
         .await
         .unwrap();
 
-    let mut handle = src.new_source_handle();
-    let out = CrudableSource::<Model>::read(&src, &[1, 3], &mut handle)
+    let handle = src.new_source_handle();
+    let out = CrudableSource::<Model>::read(&src, &[1, 3], handle)
         .await
         .unwrap();
     assert_eq!(out.len(), 2);
@@ -178,7 +178,7 @@ async fn read_filters_by_keys() {
 async fn update_many_returns_updated() {
     let conn = connect_and_prepare().await;
     let src = source(false, conn.clone());
-    let mut h = src.new_source_handle();
+    let h = src.new_source_handle();
 
     let seed = vec![
         Model {
@@ -192,7 +192,7 @@ async fn update_many_returns_updated() {
             val: 20,
         },
     ];
-    CrudableSource::<Model>::create(&src, seed, &mut h)
+    CrudableSource::<Model>::create(&src, seed, h)
         .await
         .unwrap();
 
@@ -209,8 +209,8 @@ async fn update_many_returns_updated() {
         },
     ];
 
-    let mut handle = src.new_source_handle();
-    let out = CrudableSource::<Model>::update(&src, updated.clone(), &mut handle)
+    let handle = src.new_source_handle();
+    let out = CrudableSource::<Model>::update(&src, updated.clone(), handle)
         .await
         .unwrap();
     assert_eq!(out, updated);
@@ -221,7 +221,7 @@ async fn update_many_returns_updated() {
 async fn delete_returns_deleted_rows() {
     let conn = connect_and_prepare().await;
     let src = source(false, conn.clone());
-    let mut h = src.new_source_handle();
+    let h = src.new_source_handle();
 
     let seed = vec![
         Model {
@@ -235,12 +235,12 @@ async fn delete_returns_deleted_rows() {
             val: 44,
         },
     ];
-    CrudableSource::<Model>::create(&src, seed.clone(), &mut h)
+    CrudableSource::<Model>::create(&src, seed.clone(), h)
         .await
         .unwrap();
 
-    let mut handle = src.new_source_handle();
-    let out = CrudableSource::<Model>::delete(&src, &[2, 4], &mut handle)
+    let handle = src.new_source_handle();
+    let out = CrudableSource::<Model>::delete(&src, &[2, 4], handle)
         .await
         .unwrap();
     // We expect the deleted rows to be returned (SeaORM's returning)
@@ -257,7 +257,7 @@ async fn read_for_update_owned_and_borrowed_behave() {
     let src = source(true, conn.clone());
 
     // Seed
-    let mut h_seed = src.new_source_handle();
+    let h_seed = src.new_source_handle();
     CrudableSource::<Model>::create(
         &src,
         vec![Model {
@@ -265,44 +265,44 @@ async fn read_for_update_owned_and_borrowed_behave() {
             mono: 70,
             val: 700,
         }],
-        &mut h_seed,
+        h_seed,
     )
     .await
     .unwrap();
 
     // Case A: plain connection -> source begins & commits internally; handle ends as Connection
-    let mut h1 = src.new_source_handle();
-    let rows1 = CrudableSource::<Model>::read_for_update(&src, &[7], &mut h1)
+    let h1 = src.new_source_handle();
+    let rows1 = CrudableSource::<Model>::read_for_update(&src, &[7], h1.clone())
         .await
         .unwrap();
     assert_eq!(rows1[0].id, 7);
-    match h1 {
-        PostgresCrudableConnection::Connection(_) => {}
+    match &*h1.get_conn().read().await {
+        PostgresCrudableConnectionInner::Connection(_) => {}
         _ => panic!("expected Connection after auto-commit"),
     }
 
     // Case B: owned tx -> remains our responsibility, but your impl auto-commits in read_for_update;
     // verify handle reset to Connection
-    let mut h2 = src.new_source_handle();
-    h2.maybe_begin_transaction().await.unwrap();
-    let rows2 = CrudableSource::<Model>::read_for_update(&src, &[7], &mut h2)
+    let h2 = src.new_source_handle();
+    h2.get_conn().write().await.maybe_begin_transaction().await.unwrap();
+    let rows2 = CrudableSource::<Model>::read_for_update(&src, &[7], h2.clone())
         .await
         .unwrap();
     assert_eq!(rows2[0].id, 7);
-    match h2 {
-        PostgresCrudableConnection::Connection(_) => {}
+    match &*h2.get_conn().read().await {
+        PostgresCrudableConnectionInner::Connection(_) => {}
         _ => panic!("expected Connection after auto-commit of owned tx"),
     }
 
     // Case C: borrowed tx -> must NOT be committed by the source; handle stays Borrowed
     let tx = conn.begin().await.unwrap();
-    let mut h3 = PostgresCrudableConnection::BorrowedTransaction(Arc::new(tx));
-    let rows3 = CrudableSource::<Model>::read_for_update(&src, &[7], &mut h3)
+    let h3 = PostgresCrudableConnection::new(PostgresCrudableConnectionInner::BorrowedTransaction(Arc::new(tx)));
+    let rows3 = CrudableSource::<Model>::read_for_update(&src, &[7], h3.clone())
         .await
         .unwrap();
     assert_eq!(rows3[0].id, 7);
-    match h3 {
-        PostgresCrudableConnection::BorrowedTransaction(_) => {}
+    match &*h3.get_conn().read().await {
+        PostgresCrudableConnectionInner::BorrowedTransaction(_) => {}
         _ => panic!("borrowed tx must remain borrowed"),
     }
 }
@@ -315,17 +315,17 @@ async fn use_cache_policy_is_false_inside_tx_true_otherwise() {
 
     // plain connection => use cache
     let h1 = src.new_source_handle();
-    assert!(CrudableSource::<Model>::should_use_cache(&src, &h1));
+    assert!(CrudableSource::<Model>::should_use_cache(&src, h1).await);
 
     // owned transaction => bypass cache
-    let mut h2 = src.new_source_handle();
-    h2.maybe_begin_transaction().await.unwrap();
-    assert!(!CrudableSource::<Model>::should_use_cache(&src, &h2));
+    let h2 = src.new_source_handle();
+    h2.get_conn().write().await.maybe_begin_transaction().await.unwrap();
+    assert!(!CrudableSource::<Model>::should_use_cache(&src, h2).await);
 
     // borrowed transaction => bypass cache
     let tx = conn.begin().await.unwrap();
-    let h3 = PostgresCrudableConnection::BorrowedTransaction(Arc::new(tx));
-    assert!(!CrudableSource::<Model>::should_use_cache(&src, &h3));
+    let h3 = PostgresCrudableConnection::new(PostgresCrudableConnectionInner::BorrowedTransaction(Arc::new(tx)));
+    assert!(!CrudableSource::<Model>::should_use_cache(&src, h3).await);
 }
 
 #[tokio::test]
@@ -334,8 +334,8 @@ async fn end_to_end_inside_owned_tx() {
     let conn = connect_and_prepare().await;
     let src = source(true, conn);
 
-    let mut h = src.new_source_handle();
-    h.maybe_begin_transaction().await.unwrap();
+    let h = src.new_source_handle();
+    h.get_conn().write().await.maybe_begin_transaction().await.unwrap();
 
     // create
     let c = CrudableSource::<Model>::create(
@@ -345,14 +345,14 @@ async fn end_to_end_inside_owned_tx() {
             mono: 1,
             val: 10,
         }],
-        &mut h,
+        h.clone(),
     )
     .await
     .unwrap();
     assert_eq!(c[0].id, 10);
 
     // read
-    let r = CrudableSource::<Model>::read(&src, &[10], &mut h)
+    let r = CrudableSource::<Model>::read(&src, &[10], h.clone())
         .await
         .unwrap();
     assert_eq!(r[0].val, 10);
@@ -365,22 +365,22 @@ async fn end_to_end_inside_owned_tx() {
             mono: 2,
             val: 20,
         }],
-        &mut h,
+        h.clone(),
     )
     .await
     .unwrap();
     assert_eq!(u[0].mono, 2);
 
     // delete
-    let d = CrudableSource::<Model>::delete(&src, &[10], &mut h)
+    let d = CrudableSource::<Model>::delete(&src, &[10], h.clone())
         .await
         .unwrap();
     assert_eq!(d[0].id, 10);
 
     // commit (handle should reset to Connection)
-    h.maybe_commit().await.unwrap();
-    match h {
-        PostgresCrudableConnection::Connection(_) => {}
+    h.get_conn().write().await.maybe_commit().await.unwrap();
+    match &*h.get_conn().read().await {
+        PostgresCrudableConnectionInner::Connection(_) => {}
         _ => panic!("expected Connection after explicit commit"),
     }
 }

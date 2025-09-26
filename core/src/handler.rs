@@ -23,42 +23,72 @@ where
     }
 }
 
-type CreateUpdateHook<Handler, CRUD, Ctx, Error> = dyn CrudableHook<In = Vec<CRUD>, Out = Vec<CRUD>, Error = Error, Ctx = Ctx, Handler = Handler>
-    + Send
+impl<T> AsRef<T> for MaybeArc<T> {
+    fn as_ref(&self) -> &T {
+        match self {
+            MaybeArc::Arced(arc_t) => arc_t.as_ref(),
+            MaybeArc::Owned(t) => t,
+        }
+    }
+}
+
+type CreateUpdateHook<Handler, CRUD, Ctx, SourceHandle, Error> = dyn CrudableHook<
+        In = Vec<CRUD>,
+        Out = Vec<CRUD>,
+        Error = Error,
+        Ctx = Ctx,
+        Handler = Handler,
+        SourceHandle = SourceHandle,
+    > + Send
     + Sync
     + 'static;
-type UpdateComparingHook<Handler, CRUD, Ctx, Error> = dyn CrudableHook<
+type UpdateComparingHook<Handler, CRUD, Ctx, SourceHandle, Error> = dyn CrudableHook<
         In = UpdateComparingParams<CRUD>,
         Out = Vec<CRUD>,
         Error = Error,
         Ctx = Ctx,
         Handler = Handler,
+        SourceHandle = SourceHandle,
     > + Send
     + Sync
     + 'static;
-type BeforeReadDeleteHook<Handler, Pkey, Ctx, Error> = dyn CrudableHook<In = Vec<Pkey>, Out = Vec<Pkey>, Error = Error, Ctx = Ctx, Handler = Handler>
-    + Send
+type BeforeReadDeleteHook<Handler, Pkey, Ctx, SourceHandle, Error> = dyn CrudableHook<
+        In = Vec<Pkey>,
+        Out = Vec<Pkey>,
+        Error = Error,
+        Ctx = Ctx,
+        Handler = Handler,
+        SourceHandle = SourceHandle,
+    > + Send
     + Sync
     + 'static;
-type AfterReadHook<Handler, CRUD, Ctx, Error> = dyn CrudableHook<
+type AfterReadHook<Handler, CRUD, Ctx, SourceHandle, Error> = dyn CrudableHook<
         In = Vec<MaybeArc<CRUD>>,
         Out = Vec<MaybeArc<CRUD>>,
         Error = Error,
         Ctx = Ctx,
         Handler = Handler,
+        SourceHandle = SourceHandle,
     > + Send
     + Sync
     + 'static;
-type BeforeDeleteResolvedHook<Handler, CRUD, Ctx, Error> = dyn CrudableHook<In = Vec<MaybeArc<CRUD>>, Out = (), Error = Error, Ctx = Ctx, Handler = Handler>
-    + Send
+type BeforeDeleteResolvedHook<Handler, CRUD, Ctx, SourceHandle, Error> = dyn CrudableHook<
+        In = Vec<MaybeArc<CRUD>>,
+        Out = (),
+        Error = Error,
+        Ctx = Ctx,
+        Handler = Handler,
+        SourceHandle = SourceHandle,
+    > + Send
     + Sync
     + 'static;
-type BeforeReadListHook<Handler, Column, Ctx, Error> = dyn CrudableHook<
+type BeforeReadListHook<Handler, Column, Ctx, SourceHandle, Error> = dyn CrudableHook<
         In = CrudingListParams<Column>,
         Out = CrudingListParams<Column>,
         Error = Error,
         Ctx = Ctx,
         Handler = Handler,
+        SourceHandle = SourceHandle,
     > + Send
     + Sync
     + 'static;
@@ -69,24 +99,54 @@ pub struct CrudableHandlerImpl<
     Map: CrudableMap<CRUD>,
     Source: CrudableSource<CRUD>,
     Ctx,
-    Error: From<Source::Error>,
+    Error: std::error::Error + From<Source::Error>,
     Column = (),
 > {
     map: Map,
     source: Source,
 
-    before_create: Option<Box<CreateUpdateHook<Self, CRUD, Ctx, Error>>>,
+    before_create: Option<Arc<CreateUpdateHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
 
-    before_read: Option<Box<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, Error>>>,
-    after_read: Option<Box<AfterReadHook<Self, CRUD, Ctx, Error>>>,
+    before_read:
+        Option<Arc<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, Source::SourceHandle, Error>>>,
+    after_read: Option<Arc<AfterReadHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
 
-    before_update: Option<Box<CreateUpdateHook<Self, CRUD, Ctx, Error>>>,
-    update_comparing: Option<Box<UpdateComparingHook<Self, CRUD, Ctx, Error>>>,
+    before_update: Option<Arc<CreateUpdateHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
+    update_comparing:
+        Option<Arc<UpdateComparingHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
 
-    before_delete: Option<Box<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, Error>>>,
-    before_delete_resolved: Option<Box<BeforeDeleteResolvedHook<Self, CRUD, Ctx, Error>>>,
+    before_delete:
+        Option<Arc<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, Source::SourceHandle, Error>>>,
+    before_delete_resolved:
+        Option<Arc<BeforeDeleteResolvedHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
 
-    before_read_list: Option<Box<BeforeReadListHook<Self, Column, Ctx, Error>>>,
+    before_read_list:
+        Option<Arc<BeforeReadListHook<Self, Column, Ctx, Source::SourceHandle, Error>>>,
+}
+
+impl<CRUD, Map, Source, Ctx, Error, Column> Clone
+    for CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error, Column>
+where
+    CRUD: Crudable,
+    Map: CrudableMap<CRUD>,
+    Source: CrudableSource<CRUD>,
+    Ctx: Clone,
+    Error: std::error::Error + From<Source::Error>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+            source: self.source.clone(),
+            before_create: self.before_create.clone(),
+            before_read: self.before_read.clone(),
+            after_read: self.after_read.clone(),
+            before_update: self.before_update.clone(),
+            update_comparing: self.update_comparing.clone(),
+            before_delete: self.before_delete.clone(),
+            before_delete_resolved: self.before_delete_resolved.clone(),
+            before_read_list: self.before_read_list.clone(),
+        }
+    }
 }
 
 #[async_trait]
@@ -100,26 +160,26 @@ where
     async fn create(
         &self,
         input: Vec<CRUD>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
+        ctx: Ctx,
+        source_handle: SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error>;
     async fn read(
         &self,
         input: Vec<<CRUD as Crudable>::Pkey>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
+        ctx: Ctx,
+        source_handle: SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error>;
     async fn update(
         &self,
         input: Vec<CRUD>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
+        ctx: Ctx,
+        source_handle: SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error>;
     async fn delete(
         &self,
         input: Vec<<CRUD as Crudable>::Pkey>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
+        ctx: Ctx,
+        source_handle: SourceHandle,
     ) -> Result<(), Error>;
 }
 
@@ -135,8 +195,8 @@ where
     async fn read_list(
         &self,
         params: CrudingListParams<Column>,
-        ctx: &mut Ctx,
-        handle: &mut SourceHandle,
+        ctx: Ctx,
+        handle: SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error>;
 }
 
@@ -148,23 +208,26 @@ where
     CRUD: Crudable,
     Map: CrudableMap<CRUD>,
     Source: CrudableSourceListExt<CRUD, Column, Error = DbError, SourceHandle = SourceHandle>,
-    Ctx: Send,
-    SourceHandle: Send,
-    Error: From<DbError> + Send,
+    Ctx: Clone + Send + 'static,
+    SourceHandle: Clone + Send + 'static,
+    Error: std::error::Error + From<DbError> + Send,
     DbError: Send,
-    Column: FromStr + Send + Sync + 'static,
+    Column: std::fmt::Debug + FromStr + Send + Sync + 'static,
 {
+    #[tracing::instrument(skip(self, ctx, handle), err)]
     async fn read_list(
         &self,
         mut params: CrudingListParams<Column>,
-        ctx: &mut Ctx,
-        handle: &mut SourceHandle,
+        ctx: Ctx,
+        handle: SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
         if let Some(ref hook) = self.before_read_list {
-            params = hook.invoke(self, params, ctx).await?;
+            params = hook
+                .invoke(self.clone(), params, ctx.clone(), handle.clone())
+                .await?;
         }
 
-        let ids = self.source.read_list_to_ids(params, handle).await?;
+        let ids = self.source.read_list_to_ids(params, handle.clone()).await?;
 
         self.read_inner(ids, ctx, handle).await
     }
@@ -178,16 +241,16 @@ where
     CRUD: Crudable,
     Map: CrudableMap<CRUD>,
     Source: CrudableSource<CRUD, Error = DbError, SourceHandle = SourceHandle>,
-    Ctx: Send,
-    SourceHandle: Send,
-    Error: From<DbError> + Send,
+    Ctx: Clone + Send + 'static,
+    SourceHandle: Clone + Send + 'static,
+    Error: std::error::Error + From<DbError> + Send,
     DbError: Send,
 {
     async fn create(
         &self,
         input: Vec<CRUD>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
+        ctx: Ctx,
+        source_handle: SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
         self.create_inner(input, ctx, source_handle).await
     }
@@ -195,8 +258,8 @@ where
     async fn read(
         &self,
         input: Vec<<CRUD as Crudable>::Pkey>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
+        ctx: Ctx,
+        source_handle: SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
         self.read_inner(input, ctx, source_handle).await
     }
@@ -204,8 +267,8 @@ where
     async fn update(
         &self,
         input: Vec<CRUD>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
+        ctx: Ctx,
+        source_handle: SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
         self.update_inner(input, ctx, source_handle).await
     }
@@ -213,8 +276,8 @@ where
     async fn delete(
         &self,
         input: Vec<CRUD::Pkey>,
-        ctx: &mut Ctx,
-        source_handle: &mut Source::SourceHandle,
+        ctx: Ctx,
+        source_handle: Source::SourceHandle,
     ) -> Result<(), Error> {
         self.delete_inner(input, ctx, source_handle).await
     }
@@ -226,9 +289,9 @@ where
     CRUD: Crudable,
     Map: CrudableMap<CRUD>,
     Source: CrudableSource<CRUD, SourceHandle = SourceHandle>,
-    Ctx: Send,
-    SourceHandle: Send,
-    Error: From<Source::Error> + Send,
+    Ctx: Clone + Send + 'static,
+    SourceHandle: Clone + Send + 'static,
+    Error: std::error::Error + From<Source::Error> + Send,
     Source::Error: Send,
 {
     /// Create a new instance of a CrudableHandler, all hooks will be empty, you need to install
@@ -250,72 +313,81 @@ where
 
     pub fn install_before_create(
         mut self,
-        hook: Box<CreateUpdateHook<Self, CRUD, Ctx, Error>>,
+        hook: Arc<CreateUpdateHook<Self, CRUD, Ctx, SourceHandle, Error>>,
     ) -> Self {
         self.before_create = Some(hook);
         self
     }
     pub fn install_before_read(
         mut self,
-        hook: Box<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, Error>>,
+        hook: Arc<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, SourceHandle, Error>>,
     ) -> Self {
         self.before_read = Some(hook);
         self
     }
-    pub fn install_after_read(mut self, hook: Box<AfterReadHook<Self, CRUD, Ctx, Error>>) -> Self {
+    pub fn install_after_read(
+        mut self,
+        hook: Arc<AfterReadHook<Self, CRUD, Ctx, SourceHandle, Error>>,
+    ) -> Self {
         self.after_read = Some(hook);
         self
     }
     pub fn install_before_update(
         mut self,
-        hook: Box<CreateUpdateHook<Self, CRUD, Ctx, Error>>,
+        hook: Arc<CreateUpdateHook<Self, CRUD, Ctx, SourceHandle, Error>>,
     ) -> Self {
         self.before_update = Some(hook);
         self
     }
     pub fn install_update_comparing(
         mut self,
-        hook: Box<UpdateComparingHook<Self, CRUD, Ctx, Error>>,
+        hook: Arc<UpdateComparingHook<Self, CRUD, Ctx, SourceHandle, Error>>,
     ) -> Self {
         self.update_comparing = Some(hook);
         self
     }
     pub fn install_before_delete(
         mut self,
-        hook: Box<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, Error>>,
+        hook: Arc<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, SourceHandle, Error>>,
     ) -> Self {
         self.before_delete = Some(hook);
         self
     }
     pub fn install_before_delete_resolved(
         mut self,
-        hook: Box<BeforeDeleteResolvedHook<Self, CRUD, Ctx, Error>>,
+        hook: Arc<BeforeDeleteResolvedHook<Self, CRUD, Ctx, SourceHandle, Error>>,
     ) -> Self {
         self.before_delete_resolved = Some(hook);
         self
     }
     pub fn install_before_read_list(
         mut self,
-        hook: Box<BeforeReadListHook<Self, Column, Ctx, Error>>,
+        hook: Arc<BeforeReadListHook<Self, Column, Ctx, SourceHandle, Error>>,
     ) -> Self {
         self.before_read_list = Some(hook);
         self
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, err)]
     async fn create_inner(
         &self,
         mut input: Vec<CRUD>,
-        ctx: &mut Ctx,
-        source_handle: &mut Source::SourceHandle,
+        ctx: Ctx,
+        source_handle: Source::SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
         if let Some(ref hook) = self.before_create {
-            input = hook.invoke(self, input, ctx).await?;
+            input = hook
+                .invoke(self.clone(), input, ctx.clone(), source_handle.clone())
+                .await?;
         }
 
-        input = self.source.create(input, source_handle).await?;
+        if input.is_empty() {
+            return Ok(vec![]);
+        }
 
-        if self.source.should_use_cache(source_handle) {
+        input = self.source.create(input, source_handle.clone()).await?;
+
+        if self.source.should_use_cache(source_handle.clone()).await {
             Ok(self
                 .persist_to_map(input)
                 .await
@@ -327,31 +399,42 @@ where
         }
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, err)]
     async fn read_inner(
         &self,
         mut input: Vec<CRUD::Pkey>,
-        ctx: &mut Ctx,
-        source_handle: &mut Source::SourceHandle,
+        ctx: Ctx,
+        source_handle: Source::SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
         if let Some(ref hook) = self.before_read {
-            input = hook.invoke(self, input.clone(), ctx).await?;
+            input = hook
+                .invoke(
+                    self.clone(),
+                    input.clone(),
+                    ctx.clone(),
+                    source_handle.clone(),
+                )
+                .await?;
         }
 
-        let mut items = if self.source.should_use_cache(source_handle) {
+        let mut items = if self.source.should_use_cache(source_handle.clone()).await {
             let (mut items, missed_keys) = self.get_from_map(&input).await;
 
             items.extend(
-                self.persist_to_map(self.source.read(&missed_keys, source_handle).await?)
-                    .await
-                    .into_iter()
-                    .map(MaybeArc::Arced),
+                self.persist_to_map(
+                    self.source
+                        .read(&missed_keys, source_handle.clone())
+                        .await?,
+                )
+                .await
+                .into_iter()
+                .map(MaybeArc::Arced),
             );
 
             items
         } else {
             self.source
-                .read(&input, source_handle)
+                .read(&input, source_handle.clone())
                 .await?
                 .into_iter()
                 .map(MaybeArc::Owned)
@@ -359,43 +442,59 @@ where
         };
 
         if let Some(ref hook) = self.after_read {
-            items = hook.invoke(self, items, ctx).await?;
+            items = hook
+                .invoke(self.clone(), items, ctx.clone(), source_handle)
+                .await?;
         }
 
         Ok(items)
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, err)]
     async fn update_inner(
         &self,
         mut input: Vec<CRUD>,
-        ctx: &mut Ctx,
-        source_handle: &mut Source::SourceHandle,
+        ctx: Ctx,
+        source_handle: Source::SourceHandle,
     ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
         if let Some(ref hook) = self.before_update {
-            input = hook.invoke(self, input, ctx).await?;
+            input = hook
+                .invoke(self.clone(), input, ctx.clone(), source_handle.clone())
+                .await?;
+        }
+
+        if input.is_empty() {
+            return Ok(vec![]);
         }
 
         let keys = input.iter().map(CRUD::pkey).collect::<Vec<_>>();
 
-        let current = self.source.read_for_update(&keys, source_handle).await?;
+        let current = self
+            .source
+            .read_for_update(&keys, source_handle.clone())
+            .await?;
 
         if let Some(ref hook) = self.update_comparing {
             input = hook
                 .invoke(
-                    self,
+                    self.clone(),
                     UpdateComparingParams {
                         current,
                         update_payload: input,
                     },
-                    ctx,
+                    ctx.clone(),
+                    source_handle.clone(),
                 )
                 .await?;
         }
 
-        input = self.source.update(input, source_handle).await?;
+        if input.is_empty() {
+            return Ok(vec![]);
+        }
 
-        if self.source.should_use_cache(source_handle) {
+        input = self.source.update(input, source_handle.clone()).await?;
+
+        if self.source.should_use_cache(source_handle.clone()).await {
             Ok(self
                 .persist_to_map(input)
                 .await
@@ -407,31 +506,37 @@ where
         }
     }
 
-    #[tracing::instrument(skip_all)]
+    #[tracing::instrument(skip_all, err)]
     async fn delete_inner(
         &self,
         mut input: Vec<CRUD::Pkey>,
-        ctx: &mut Ctx,
-        source_handle: &mut Source::SourceHandle,
+        ctx: Ctx,
+        source_handle: Source::SourceHandle,
     ) -> Result<(), Error> {
         if let Some(ref hook) = self.before_delete {
-            input = hook.invoke(self, input, ctx).await?;
+            input = hook
+                .invoke(self.clone(), input, ctx.clone(), source_handle.clone())
+                .await?;
         }
 
-        let items = if self.source.should_use_cache(source_handle) {
+        let items = if self.source.should_use_cache(source_handle.clone()).await {
             let (mut items, missed_keys) = self.get_from_map(&input).await;
 
             items.extend(
-                self.persist_to_map(self.source.read(&missed_keys, source_handle).await?)
-                    .await
-                    .into_iter()
-                    .map(MaybeArc::Arced),
+                self.persist_to_map(
+                    self.source
+                        .read(&missed_keys, source_handle.clone())
+                        .await?,
+                )
+                .await
+                .into_iter()
+                .map(MaybeArc::Arced),
             );
 
             items
         } else {
             self.source
-                .read(&input, source_handle)
+                .read(&input, source_handle.clone())
                 .await?
                 .into_iter()
                 .map(MaybeArc::Owned)
@@ -439,12 +544,13 @@ where
         };
 
         if let Some(ref hook) = self.before_delete_resolved {
-            hook.invoke(self, items, ctx).await?;
+            hook.invoke(self.clone(), items, ctx.clone(), source_handle.clone())
+                .await?;
         }
 
-        self.source.delete(&input, source_handle).await?;
+        self.source.delete(&input, source_handle.clone()).await?;
 
-        if self.source.should_use_cache(source_handle) {
+        if self.source.should_use_cache(source_handle.clone()).await {
             self.invalidate_from_map(&input).await;
         }
 
@@ -491,50 +597,4 @@ pub trait CrudableHandlerGetterListExt<CRUD, Ctx, SourceHandle, Error, Column>:
     Clone + Send + Sync
 {
     fn handler_list(&self) -> &dyn CrudableHandlerListExt<CRUD, Ctx, SourceHandle, Error, Column>;
-}
-
-#[async_trait]
-impl<CRUD, Ctx, SourceHandle, Error, CAH> CrudableHandler<CRUD, Ctx, SourceHandle, Error> for CAH
-where
-    CRUD: Crudable,
-    Ctx: Send,
-    Error: Send,
-    SourceHandle: Send,
-    CAH: CrudableHandlerGetter<CRUD, Ctx, SourceHandle, Error>,
-{
-    async fn create(
-        &self,
-        input: Vec<CRUD>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
-    ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
-        self.handler().create(input, ctx, source_handle).await
-    }
-
-    async fn read(
-        &self,
-        input: Vec<<CRUD as Crudable>::Pkey>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
-    ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
-        self.handler().read(input, ctx, source_handle).await
-    }
-
-    async fn update(
-        &self,
-        input: Vec<CRUD>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
-    ) -> Result<Vec<MaybeArc<CRUD>>, Error> {
-        self.handler().update(input, ctx, source_handle).await
-    }
-
-    async fn delete(
-        &self,
-        input: Vec<<CRUD as Crudable>::Pkey>,
-        ctx: &mut Ctx,
-        source_handle: &mut SourceHandle,
-    ) -> Result<(), Error> {
-        self.handler().delete(input, ctx, source_handle).await
-    }
 }

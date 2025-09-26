@@ -122,50 +122,50 @@ struct TestHandler {
 }
 
 #[async_trait]
-impl CrudableHandler<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for TestHandler {
+impl CrudableHandler<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError> for TestHandler {
     async fn create(
         &self,
         _i: Vec<Thing>,
-        _c: &mut (AxumCtx, InnerCtx),
-        _s: &mut SrcHandle,
+        _c: Arc<(AxumCtx, InnerCtx)>,
+        _s: SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
         unreachable!()
     }
     async fn read(
         &self,
         _k: Vec<i32>,
-        _c: &mut (AxumCtx, InnerCtx),
-        _s: &mut SrcHandle,
+        _c: Arc<(AxumCtx, InnerCtx)>,
+        _s: SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
         unreachable!()
     }
     async fn update(
         &self,
         _i: Vec<Thing>,
-        _c: &mut (AxumCtx, InnerCtx),
-        _s: &mut SrcHandle,
+        _c: Arc<(AxumCtx, InnerCtx)>,
+        _s: SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
         unreachable!()
     }
     async fn delete(
         &self,
         _k: Vec<i32>,
-        _c: &mut (AxumCtx, InnerCtx),
-        _s: &mut SrcHandle,
+        _c: Arc<(AxumCtx, InnerCtx)>,
+        _s: SrcHandle,
     ) -> Result<(), ApiError> {
         unreachable!()
     }
 }
 
 #[async_trait]
-impl CrudableHandlerListExt<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError, Column>
+impl CrudableHandlerListExt<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError, Column>
     for TestHandler
 {
     async fn read_list(
         &self,
         params: CrudingListParams<Column>,
-        _ctx: &mut (AxumCtx, InnerCtx),
-        _sh: &mut SrcHandle,
+        _ctx: Arc<(AxumCtx, InnerCtx)>,
+        _sh: SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
         *self.last_params.lock().unwrap() = Some(params);
         // Return something trivial; body content isn't the focus here
@@ -191,22 +191,22 @@ struct AppState {
     handler: TestHandler,
     inner: InnerCtx,
 }
-impl CrudableHandlerGetter<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for AppState {
+impl CrudableHandlerGetter<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError> for AppState {
     fn handler(
         &self,
-    ) -> &dyn cruding_core::handler::CrudableHandler<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError>
+    ) -> &dyn cruding_core::handler::CrudableHandler<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError>
     {
         &self.handler
     }
 }
-impl CrudableHandlerGetterListExt<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError, Column>
+impl CrudableHandlerGetterListExt<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError, Column>
     for AppState
 {
     fn handler_list(
         &self,
     ) -> &dyn cruding_core::handler::CrudableHandlerListExt<
         Thing,
-        (AxumCtx, InnerCtx),
+        Arc<(AxumCtx, InnerCtx)>,
         SrcHandle,
         ApiError,
         Column,

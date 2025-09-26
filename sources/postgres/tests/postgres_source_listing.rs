@@ -12,9 +12,7 @@ use cruding_core::{
 };
 use cruding_pg_source::{
     // <-- change to your crate name
-    CrudablePostgresSource,
-    PostgresCrudableConnection,
-    PostgresCrudableTable,
+    CrudablePostgresSource, PostgresCrudableConnection, PostgresCrudableConnectionInner, PostgresCrudableTable
 };
 
 use sea_orm::{
@@ -221,7 +219,7 @@ async fn eq_and_neq_filters() {
     let conn = connect_and_prepare().await;
     seed(&conn).await;
     let src = source(false, conn);
-    let mut handle = src.new_source_handle();
+    let handle = src.new_source_handle();
 
     // Eq on integer: i == 20 -> id 2
     let p = params(
@@ -233,7 +231,7 @@ async fn eq_and_neq_filters() {
         0,
         50,
     );
-    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, &mut handle)
+    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, handle.clone())
         .await
         .unwrap();
     assert_eq!(ids, vec![2]);
@@ -248,7 +246,7 @@ async fn eq_and_neq_filters() {
         0,
         50,
     );
-    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, &mut handle)
+    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, handle.clone())
         .await
         .unwrap();
     assert_eq!(ids, vec![1, 4, 5]);
@@ -260,7 +258,7 @@ async fn comparison_filters_gt_ge_lt_le() {
     let conn = connect_and_prepare().await;
     seed(&conn).await;
     let src = source(false, conn);
-    let mut handle = src.new_source_handle();
+    let handle = src.new_source_handle();
 
     // Gt: i > 30 -> ids [4,5]
     let p = params(
@@ -272,7 +270,7 @@ async fn comparison_filters_gt_ge_lt_le() {
         0,
         50,
     );
-    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, &mut handle)
+    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, handle.clone())
         .await
         .unwrap();
     assert_eq!(ids, vec![4, 5]);
@@ -287,7 +285,7 @@ async fn comparison_filters_gt_ge_lt_le() {
         0,
         50,
     );
-    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, &mut handle)
+    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, handle.clone())
         .await
         .unwrap();
     assert_eq!(ids, vec![3, 4, 5]);
@@ -302,7 +300,7 @@ async fn comparison_filters_gt_ge_lt_le() {
         0,
         50,
     );
-    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, &mut handle)
+    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, handle.clone())
         .await
         .unwrap();
     assert_eq!(ids, vec![1]);
@@ -317,7 +315,7 @@ async fn comparison_filters_gt_ge_lt_le() {
         0,
         50,
     );
-    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, &mut handle)
+    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, handle)
         .await
         .unwrap();
     assert_eq!(ids, vec![1, 2]);
@@ -329,7 +327,7 @@ async fn in_and_notin_filters_uuid_and_text() {
     let conn = connect_and_prepare().await;
     seed(&conn).await;
     let src = source(false, conn.clone());
-    let mut handle = src.new_source_handle();
+    let handle = src.new_source_handle();
 
     // Fetch all to learn the UUIDs
     let all: Vec<Model> = Entity::find()
@@ -352,7 +350,7 @@ async fn in_and_notin_filters_uuid_and_text() {
         0,
         50,
     );
-    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, &mut handle)
+    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, handle.clone())
         .await
         .unwrap();
     assert_eq!(ids, vec![2, 4]);
@@ -367,7 +365,7 @@ async fn in_and_notin_filters_uuid_and_text() {
         0,
         50,
     );
-    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, &mut handle)
+    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, handle)
         .await
         .unwrap();
     assert_eq!(ids, vec![1, 5]);
@@ -379,7 +377,7 @@ async fn combined_filters_and_sorting() {
     let conn = connect_and_prepare().await;
     seed(&conn).await;
     let src = source(false, conn);
-    let mut handle = src.new_source_handle();
+    let handle = src.new_source_handle();
 
     // WHERE s = 'beta' AND i >= 20 ORDER BY i DESC -> ids [3,2]
     let p = params(
@@ -397,7 +395,7 @@ async fn combined_filters_and_sorting() {
         0,
         50,
     );
-    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, &mut handle)
+    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, handle)
         .await
         .unwrap();
     assert_eq!(ids, vec![3, 2]);
@@ -409,7 +407,7 @@ async fn pagination_with_sort() {
     let conn = connect_and_prepare().await;
     seed(&conn).await;
     let src = source(false, conn);
-    let mut handle = src.new_source_handle();
+    let handle = src.new_source_handle();
 
     // ORDER BY id ASC, page size 2:
     // page 0 -> [1,2], page 1 -> [3,4], page 2 -> [5]
@@ -420,13 +418,13 @@ async fn pagination_with_sort() {
     let p1 = params(common_filters.clone(), sort.clone(), 1, 2);
     let p2 = params(common_filters, sort, 2, 2);
 
-    let ids0 = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p0, &mut handle)
+    let ids0 = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p0, handle.clone())
         .await
         .unwrap();
-    let ids1 = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p1, &mut handle)
+    let ids1 = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p1, handle.clone())
         .await
         .unwrap();
-    let ids2 = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p2, &mut handle)
+    let ids2 = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p2, handle)
         .await
         .unwrap();
 
@@ -443,7 +441,7 @@ async fn read_list_to_ids_inside_borrowed_tx() {
     let src = source(false, conn.clone());
 
     let tx = conn.begin().await.unwrap();
-    let mut handle = PostgresCrudableConnection::BorrowedTransaction(Arc::new(tx));
+    let handle = PostgresCrudableConnection::new(PostgresCrudableConnectionInner::BorrowedTransaction(Arc::new(tx)));
     let p = params(
         vec![CrudingListFilter {
             column: Column::I,
@@ -453,14 +451,14 @@ async fn read_list_to_ids_inside_borrowed_tx() {
         0,
         50,
     );
-    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, &mut handle)
+    let ids = CrudableSourceListExt::<Model, Column>::read_list_to_ids(&src, p, handle.clone())
         .await
         .unwrap();
     assert_eq!(ids, vec![2, 3, 4, 5]);
 
     // ensure handle remains borrowed
-    match handle {
-        PostgresCrudableConnection::BorrowedTransaction(_) => {}
+    match &*handle.get_conn().read().await {
+        PostgresCrudableConnectionInner::BorrowedTransaction(_) => {}
         _ => panic!("expected borrowed transaction"),
     }
 }

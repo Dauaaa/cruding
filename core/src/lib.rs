@@ -21,9 +21,8 @@ pub trait Crudable: Clone + Send + Sync + 'static {
     fn mono_field(&self) -> Self::MonoField;
 }
 
-#[mockall::automock]
 #[async_trait]
-pub trait CrudableMap<CRUD: Crudable>: Send + Sync + 'static {
+pub trait CrudableMap<CRUD: Crudable>: Clone + Send + Sync + 'static {
     /// Updates the cache but only does that if item's mono is greater. This will still return
     /// Arc<item> even if it lost to the current inserted entry.
     async fn insert(&self, item: CRUD) -> Arc<CRUD>;
@@ -32,44 +31,43 @@ pub trait CrudableMap<CRUD: Crudable>: Send + Sync + 'static {
     async fn contains_key(&self, key: &CRUD::Pkey) -> bool;
 }
 
-#[mockall::automock(type Error = (); type SourceHandle = ();)]
 #[async_trait]
-pub trait CrudableSource<CRUD: Crudable>: Send + Sync + 'static {
+pub trait CrudableSource<CRUD: Crudable>: Clone + Send + Sync + 'static {
     type Error: Send + Sync + 'static;
     type SourceHandle: Send + Sync + 'static;
 
     async fn create(
         &self,
         items: Vec<CRUD>,
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<CRUD>, Self::Error>;
     async fn read(
         &self,
         keys: &[CRUD::Pkey],
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<CRUD>, Self::Error>;
     async fn update(
         &self,
         items: Vec<CRUD>,
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<CRUD>, Self::Error>;
     async fn read_for_update(
         &self,
         keys: &[CRUD::Pkey],
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<CRUD>, Self::Error> {
         self.read(keys, handle).await
     }
     async fn delete(
         &self,
         keys: &[CRUD::Pkey],
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<CRUD>, Self::Error>;
 
     /// Hints the handler if it should use the cache given the current context. This is useful
     /// if, for example, a database implementation is under a transaction (so whatever the db
     /// returns could be tainted with uncommited changes).
-    fn should_use_cache(&self, handle: &Self::SourceHandle) -> bool;
+    async fn should_use_cache(&self, handle: Self::SourceHandle) -> bool;
 }
 
 pub struct UpdateComparingParams<CRUD: Crudable> {

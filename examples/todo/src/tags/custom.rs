@@ -12,9 +12,11 @@ use cruding::{
     handler::{CrudableHandler, CrudableHandlerImpl, CrudableHandlerListExt, MaybeArc},
     list::{CrudingListSort, CrudingListSortOrder},
     moka,
-    pg_source::{CrudablePostgresSource, PostgresCrudableConnection},
+    pg_source::{
+        CrudablePostgresSource, PostgresCrudableConnection, PostgresCrudableConnectionInner,
+    },
 };
-use sea_orm::{JoinType, QuerySelect, TransactionTrait};
+use sea_orm::{IntoActiveModel, JoinType, QuerySelect, TransactionTrait, sea_query::OnConflict};
 use tokio::try_join;
 
 use super::*;
@@ -29,7 +31,7 @@ pub mod tags_counter {
     #[derive(Debug, Clone, Serialize, Deserialize, DeriveEntityModel)]
     #[sea_orm(table_name = "tags_counter")]
     pub struct Model {
-        #[sea_orm(primary_key)]
+        #[sea_orm(primary_key, auto_increment = false)]
         tag: String,
         total: i64,
         creation_time: DateTime<Utc>,
@@ -55,6 +57,10 @@ pub mod tags_counter {
 
         pub fn tag(&self) -> &String {
             &self.tag
+        }
+
+        pub fn count(&self) -> i64 {
+            self.total
         }
 
         pub fn set_count(&mut self, new_count: i64, now: DateTime<Utc>) {
@@ -125,8 +131,6 @@ pub type TagsCounterHandler = CrudableHandlerImpl<
     tags_counter::Model,
     TagsCounterCache,
     TagsCounterPostgresSource,
-    // AxumCtx needs to implement IntoRequestParts, AppCtx needs to be instantiated by you handler
-    // implementation.
     (),
     DbErr,
     // If you add the column here (which should already implement all necessary traits if generated
@@ -150,8 +154,14 @@ pub trait TagsRepo {
     async fn update_counter(
         &self,
         tags_counter_handler: &TagsCounterHandler,
-        mut conn_handle: PostgresCrudableConnection,
+        conn_handle: PostgresCrudableConnection,
         update_at_least: u32,
+    ) -> Result<(), DbErr>;
+    /// Creates counters if they don't exist
+    async fn declare_counters(
+        &self,
+        conn: PostgresCrudableConnection,
+        input: Vec<tags_counter::Model>,
     ) -> Result<(), DbErr>;
 }
 
@@ -173,24 +183,49 @@ impl TagsRepo for PostgresTagsRepoImpl {
             .group_by(Column::Tag)
             .into_tuple::<String>();
 
-        match &conn {
-            PostgresCrudableConnection::Connection(c) => {
+        let conn = conn.get_conn().read().await;
+        match &*conn {
+            PostgresCrudableConnectionInner::Connection(c) => {
                 q.paginate(c, page_size).fetch_page(page).await
             }
-            PostgresCrudableConnection::OwnedTransaction(_, tx) => {
-                q.paginate(tx, page_size).fetch_page(page).await
+            PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => {
+                q.paginate(tx.as_ref(), page_size).fetch_page(page).await
             }
-            PostgresCrudableConnection::BorrowedTransaction(tx) => {
+            PostgresCrudableConnectionInner::BorrowedTransaction(tx) => {
                 q.paginate(tx.as_ref(), page_size).fetch_page(page).await
             }
         }
     }
+
+    async fn declare_counters(
+        &self,
+        conn: PostgresCrudableConnection,
+        input: Vec<tags_counter::Model>,
+    ) -> Result<(), DbErr> {
+        let q = tags_counter::Entity::insert_many(input.into_iter().map(|x| x.into_active_model()))
+            .on_conflict(
+                OnConflict::column(tags_counter::Column::Tag)
+                    .do_nothing()
+                    .to_owned(),
+            )
+            .do_nothing();
+
+        let conn = conn.get_conn().read().await;
+        match &*conn {
+            PostgresCrudableConnectionInner::Connection(c) => q.exec(c).await?,
+            PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => q.exec(tx.as_ref()).await?,
+            PostgresCrudableConnectionInner::BorrowedTransaction(tx) => q.exec(tx.as_ref()).await?,
+        };
+
+        Ok(())
+    }
+
     /// Updates up to n counters, ordering by update_time, creates missing counters and deletes
     /// zeroed counters
     async fn update_counter(
         &self,
         tags_counter_handler: &TagsCounterHandler,
-        mut conn_handle: PostgresCrudableConnection,
+        conn: PostgresCrudableConnection,
         update_at_least: u32,
     ) -> Result<(), DbErr> {
         // SUGGESTION: use an advisory lock for these types of workloads
@@ -203,14 +238,16 @@ impl TagsRepo for PostgresTagsRepoImpl {
                         order: CrudingListSortOrder::Asc,
                     }],
                     pagination: cruding::list::CrudingListPagination {
-                        page: 1,
+                        page: 0,
                         size: update_at_least,
                     },
                 },
-                &mut (),
-                &mut conn_handle,
+                (),
+                conn.clone(),
             )
             .await?;
+
+        tracing::debug!("Updating total of {} tag counters", counters.len());
 
         let mut counters = counters
             .into_iter()
@@ -235,41 +272,52 @@ impl TagsRepo for PostgresTagsRepoImpl {
             .filter(Expr::col((tags_counter::Entity, tags_counter::Column::Tag)).is_null())
             .select_only()
             .column(tags::Column::Tag)
-            .column_as(Expr::col(Column::Tag).count(), "total")
+            .column_as(tags::Column::Tag.count(), "total")
+            .group_by(tags::Column::Tag)
             .into_tuple::<(String, i64)>();
 
-        let get_need_create_fut = async {
-            match &conn_handle {
-                PostgresCrudableConnection::Connection(c) => query_need_create.all(c).await,
-                PostgresCrudableConnection::OwnedTransaction(_, tx) => {
-                    query_need_create.all(tx).await
+        let (need_create, counts) = {
+            let conn = conn.get_conn().read().await;
+
+            let get_need_create_fut = async {
+                match &*conn {
+                    PostgresCrudableConnectionInner::Connection(c) => {
+                        query_need_create.all(c).await
+                    }
+                    PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => {
+                        query_need_create.all(tx.as_ref()).await
+                    }
+                    PostgresCrudableConnectionInner::BorrowedTransaction(tx) => {
+                        query_need_create.all(tx.as_ref()).await
+                    }
                 }
-                PostgresCrudableConnection::BorrowedTransaction(tx) => {
-                    query_need_create.all(tx.as_ref()).await
+            };
+
+            let get_counts_fut = async {
+                match &*conn {
+                    PostgresCrudableConnectionInner::Connection(c) => {
+                        query_need_update.all(c).await
+                    }
+                    PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => {
+                        query_need_update.all(tx.as_ref()).await
+                    }
+                    PostgresCrudableConnectionInner::BorrowedTransaction(tx) => {
+                        query_need_update.all(tx.as_ref()).await
+                    }
                 }
-            }
+            };
+
+            try_join!(get_need_create_fut, get_counts_fut)?
         };
 
-        let get_counts_fut = async {
-            match &conn_handle {
-                PostgresCrudableConnection::Connection(c) => query_need_update.all(c).await,
-                PostgresCrudableConnection::OwnedTransaction(_, tx) => {
-                    query_need_update.all(tx).await
-                }
-                PostgresCrudableConnection::BorrowedTransaction(tx) => {
-                    query_need_update.all(tx.as_ref()).await
-                }
-            }
-        };
-
-        let (need_create, counts) = try_join!(get_need_create_fut, get_counts_fut)?;
+        tracing::debug!("Need to create total of {} tag counters", need_create.len());
 
         let now = Utc::now();
 
         let need_create = need_create
             .into_iter()
             .map(|(tag, total)| tags_counter::Model::new(tag, total, now))
-            .collect();
+            .collect::<Vec<_>>();
         let mut to_delete = vec![];
         for count in counts {
             if count.1 == 0 {
@@ -281,14 +329,16 @@ impl TagsRepo for PostgresTagsRepoImpl {
             }
         }
 
+        if !need_create.is_empty() {
+            tags_counter_handler
+                .create(need_create, (), conn.clone())
+                .await?;
+        }
         tags_counter_handler
-            .create(need_create, &mut (), &mut conn_handle)
+            .update(counters.into_values().collect(), (), conn.clone())
             .await?;
         tags_counter_handler
-            .update(counters.into_values().collect(), &mut (), &mut conn_handle)
-            .await?;
-        tags_counter_handler
-            .delete(to_delete, &mut (), &mut conn_handle)
+            .delete(to_delete, (), conn.clone())
             .await?;
 
         Ok(())
@@ -309,10 +359,10 @@ pub async fn update_counters(state: State<AppState>) -> (StatusCode, String) {
             .tags_repo
             .update_counter(
                 state.tags_counter_handler.as_ref(),
-                PostgresCrudableConnection::OwnedTransaction(
+                PostgresCrudableConnection::new(PostgresCrudableConnectionInner::OwnedTransaction(
                     state.db_conn.clone(),
-                    state.db_conn.begin().await?,
-                ),
+                    Arc::new(state.db_conn.begin().await?),
+                )),
                 50,
             )
             .await
@@ -340,7 +390,9 @@ pub async fn tag_like_filter(
     match state
         .tags_repo
         .like_search_tags(
-            PostgresCrudableConnection::Connection(state.db_conn.clone()),
+            PostgresCrudableConnection::new(PostgresCrudableConnectionInner::Connection(
+                state.db_conn.clone(),
+            )),
             &filter.tag,
             filter.page,
             filter.size,

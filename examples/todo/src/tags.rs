@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub use custom::{
     PostgresTagsRepoImpl, TagsCounterHandler, TagsRepo, build_tags_counter_handler,
-    tag_like_filter, tags_counter::Entity as TagsCounterEntity, update_counters,
+    tag_like_filter, tags_counter, tags_counter::Entity as TagsCounterEntity, update_counters,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, DeriveEntityModel)]
@@ -21,23 +21,23 @@ pub struct Model {
     update_time: DateTime<Utc>,
 
     // client fields
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     tag: String,
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     entity_id: String,
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     entity_type: String,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
 
+// not actual fk relation
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
         belongs_to = "custom::tags_counter::Entity",
         from = "Column::Tag",
-        to = "custom::tags_counter::Column::Tag",
-        on_delete = "Cascade"
+        to = "custom::tags_counter::Column::Tag"
     )]
     TagsCounter,
 }
@@ -51,6 +51,9 @@ impl Related<custom::tags_counter::Entity> for Entity {
 // domain implementation
 
 impl Model {
+    pub fn tag(&self) -> &String {
+        &self.tag
+    }
     pub fn initialize(&mut self, now: DateTime<Utc>) {
         self.creation_time = now;
         self.update_time = now;

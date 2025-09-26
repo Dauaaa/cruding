@@ -49,6 +49,6 @@ pub trait CrudableSourceListExt<CRUD: Crudable, Column: FromStr + Send + Sync + 
     async fn read_list_to_ids(
         &self,
         params: CrudingListParams<Column>,
-        handle: &mut Self::SourceHandle,
+        handle: Self::SourceHandle,
     ) -> Result<Vec<CRUD::Pkey>, Self::Error>;
 }

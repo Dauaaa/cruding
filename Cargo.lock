@@ -648,9 +648,15 @@ dependencies = [
  "axum",
  "chrono",
  "cruding",
+ "futures",
  "sea-orm",
  "serde",
+ "serde_json",
  "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "urlencoding",
  "uuid",
 ]
 

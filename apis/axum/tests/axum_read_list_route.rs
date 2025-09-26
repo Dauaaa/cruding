@@ -134,12 +134,12 @@ impl TestHandler {
 }
 
 #[async_trait]
-impl CrudableHandler<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for TestHandler {
+impl CrudableHandler<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError> for TestHandler {
     async fn create(
         &self,
         _input: Vec<Thing>,
-        _ctx: &mut (AxumCtx, InnerCtx),
-        _sh: &mut SrcHandle,
+        _ctx: Arc<(AxumCtx, InnerCtx)>,
+        _sh: SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
         unreachable!("not used in this test");
     }
@@ -147,8 +147,8 @@ impl CrudableHandler<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for TestHa
     async fn read(
         &self,
         _keys: Vec<i32>,
-        _ctx: &mut (AxumCtx, InnerCtx),
-        _sh: &mut SrcHandle,
+        _ctx: Arc<(AxumCtx, InnerCtx)>,
+        _sh: SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
         unreachable!("not used in this test");
     }
@@ -156,8 +156,8 @@ impl CrudableHandler<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for TestHa
     async fn update(
         &self,
         _input: Vec<Thing>,
-        _ctx: &mut (AxumCtx, InnerCtx),
-        _sh: &mut SrcHandle,
+        _ctx: Arc<(AxumCtx, InnerCtx)>,
+        _sh: SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
         unreachable!("not used in this test");
     }
@@ -165,8 +165,8 @@ impl CrudableHandler<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for TestHa
     async fn delete(
         &self,
         _keys: Vec<i32>,
-        _ctx: &mut (AxumCtx, InnerCtx),
-        _sh: &mut SrcHandle,
+        _ctx: Arc<(AxumCtx, InnerCtx)>,
+        _sh: SrcHandle,
     ) -> Result<(), ApiError> {
         unreachable!("not used in this test");
     }
@@ -174,14 +174,14 @@ impl CrudableHandler<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for TestHa
 
 // Implement the *list* handler trait for our TestHandler
 #[async_trait]
-impl CrudableHandlerListExt<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError, Column>
+impl CrudableHandlerListExt<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError, Column>
     for TestHandler
 {
     async fn read_list(
         &self,
         _params: CrudingListParams<Column>,
-        ctx: &mut (AxumCtx, InnerCtx),
-        _sh: &mut SrcHandle,
+        ctx: Arc<(AxumCtx, InnerCtx)>,
+        _sh: SrcHandle,
     ) -> Result<Vec<MaybeArc<Thing>>, ApiError> {
         self.push(format!("list user={} shard={}", ctx.0.user, ctx.1.shard));
         // Return a stable, deterministic set
@@ -213,22 +213,22 @@ struct AppState {
     inner: InnerCtx,
 }
 
-impl CrudableHandlerGetter<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError> for AppState {
+impl CrudableHandlerGetter<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError> for AppState {
     fn handler(
         &self,
-    ) -> &dyn cruding_core::handler::CrudableHandler<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError>
+    ) -> &dyn cruding_core::handler::CrudableHandler<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError>
     {
         &self.handler
     }
 }
-impl CrudableHandlerGetterListExt<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiError, Column>
+impl CrudableHandlerGetterListExt<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError, Column>
     for AppState
 {
     fn handler_list(
         &self,
     ) -> &dyn cruding_core::handler::CrudableHandlerListExt<
         Thing,
-        (AxumCtx, InnerCtx),
+        Arc<(AxumCtx, InnerCtx)>,
         SrcHandle,
         ApiError,
         Column,

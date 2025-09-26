@@ -35,14 +35,14 @@ impl Crudable for Item {
 
 // ---------- Fake source (in-memory DB) ----------
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct MemSource {
     // (version/mono, value)
-    inner: Mutex<HashMap<u64, Item>>,
+    inner: Arc<Mutex<HashMap<u64, Item>>>,
     // whether the handler should use cache in this “context”
     allow_cache: bool,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Handle; // no-op transaction/context
 
 #[allow(dead_code)]
@@ -57,7 +57,7 @@ impl CrudableSource<Item> for MemSource {
     type Error = DbError;
     type SourceHandle = Handle;
 
-    async fn create(&self, items: Vec<Item>, _h: &mut Handle) -> Result<Vec<Item>, DbError> {
+    async fn create(&self, items: Vec<Item>, _h: Handle) -> Result<Vec<Item>, DbError> {
         let mut g = self.inner.lock().await;
         for it in &items {
             g.insert(it.id, it.clone());
@@ -65,12 +65,12 @@ impl CrudableSource<Item> for MemSource {
         Ok(items)
     }
 
-    async fn read(&self, keys: &[u64], _h: &mut Handle) -> Result<Vec<Item>, DbError> {
+    async fn read(&self, keys: &[u64], _h: Handle) -> Result<Vec<Item>, DbError> {
         let g = self.inner.lock().await;
         Ok(keys.iter().filter_map(|k| g.get(k).cloned()).collect())
     }
 
-    async fn update(&self, items: Vec<Item>, _h: &mut Handle) -> Result<Vec<Item>, DbError> {
+    async fn update(&self, items: Vec<Item>, _h: Handle) -> Result<Vec<Item>, DbError> {
         let mut g = self.inner.lock().await;
         for it in &items {
             g.insert(it.id, it.clone());
@@ -78,11 +78,11 @@ impl CrudableSource<Item> for MemSource {
         Ok(items)
     }
 
-    async fn read_for_update(&self, keys: &[u64], _h: &mut Handle) -> Result<Vec<Item>, DbError> {
+    async fn read_for_update(&self, keys: &[u64], _h: Handle) -> Result<Vec<Item>, DbError> {
         self.read(keys, _h).await
     }
 
-    async fn delete(&self, keys: &[u64], _h: &mut Handle) -> Result<Vec<Item>, DbError> {
+    async fn delete(&self, keys: &[u64], _h: Handle) -> Result<Vec<Item>, DbError> {
         let mut g = self.inner.lock().await;
         let mut out = Vec::new();
         for k in keys {
@@ -93,7 +93,7 @@ impl CrudableSource<Item> for MemSource {
         Ok(out)
     }
 
-    fn should_use_cache(&self, _h: &Handle) -> bool {
+    async fn should_use_cache(&self, _h: Handle) -> bool {
         self.allow_cache
     }
 }
@@ -115,7 +115,7 @@ fn handler_with(
     CrudableHandlerImpl::new(cache, source)
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct TestCtx;
 #[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
@@ -137,8 +137,8 @@ async fn create_then_read_hits_cache() {
     };
     let handler = handler_with(source, cache);
 
-    let mut ctx = TestCtx;
-    let mut h = Handle;
+    let ctx = TestCtx;
+    let h = Handle;
 
     // Create
     let created = handler
@@ -148,8 +148,8 @@ async fn create_then_read_hits_cache() {
                 mono: 1,
                 val: 10,
             }],
-            &mut ctx,
-            &mut h,
+            ctx.clone(),
+            h.clone(),
         )
         .await
         .unwrap();
@@ -167,7 +167,7 @@ async fn create_then_read_hits_cache() {
     }
 
     // Read should hit cache (no source call visible here, but correctness via equality)
-    let read = handler.read(vec![1], &mut ctx, &mut h).await.unwrap();
+    let read = handler.read(vec![1], ctx, h).await.unwrap();
     match &read[0] {
         MaybeArc::Arced(v) => assert_eq!(
             **v,
@@ -190,7 +190,7 @@ async fn read_miss_then_populates_cache() {
     };
     // Preload DB only
     {
-        let mut h = Handle;
+        let h = Handle;
         source
             .create(
                 vec![Item {
@@ -198,22 +198,22 @@ async fn read_miss_then_populates_cache() {
                     mono: 5,
                     val: 20,
                 }],
-                &mut h,
+                h,
             )
             .await
             .unwrap();
     }
 
     let handler = handler_with(source, cache);
-    let mut ctx = TestCtx;
-    let mut h = Handle;
+    let ctx = TestCtx;
+    let h = Handle;
 
     // First read: miss → fetch → cache
-    let out1 = handler.read(vec![2], &mut ctx, &mut h).await.unwrap();
+    let out1 = handler.read(vec![2], ctx.clone(), h.clone()).await.unwrap();
     assert!(matches!(&out1[0], MaybeArc::Arced(_)));
 
     // Second read: should be a cache hit
-    let out2 = handler.read(vec![2], &mut ctx, &mut h).await.unwrap();
+    let out2 = handler.read(vec![2], ctx, h).await.unwrap();
     assert!(matches!(&out2[0], MaybeArc::Arced(_)));
 }
 
@@ -226,8 +226,8 @@ async fn update_obeys_monotonic_replace() {
     };
     let handler = handler_with(source, cache);
 
-    let mut ctx = TestCtx;
-    let mut h = Handle;
+    let ctx = TestCtx;
+    let h = Handle;
 
     // Create v1
     handler
@@ -237,8 +237,8 @@ async fn update_obeys_monotonic_replace() {
                 mono: 1,
                 val: 1,
             }],
-            &mut ctx,
-            &mut h,
+            ctx.clone(),
+            h.clone(),
         )
         .await
         .unwrap();
@@ -251,13 +251,13 @@ async fn update_obeys_monotonic_replace() {
                 mono: 0,
                 val: 999,
             }],
-            &mut ctx,
-            &mut h,
+            ctx.clone(),
+            h.clone(),
         )
         .await
         .unwrap();
 
-    let out_low = handler.read(vec![3], &mut ctx, &mut h).await.unwrap();
+    let out_low = handler.read(vec![3], ctx.clone(), h.clone()).await.unwrap();
 
     // Because write-through inserts new value into DB and cache-insert compares mono,
     // cache should still expose mono=1 version.
@@ -281,8 +281,8 @@ async fn update_obeys_monotonic_replace() {
                 mono: 2,
                 val: 123,
             }],
-            &mut ctx,
-            &mut h,
+            ctx,
+            h,
         )
         .await
         .unwrap();
@@ -309,8 +309,8 @@ async fn delete_invalidates_cache() {
     };
     let handler = handler_with(source, cache);
 
-    let mut ctx = TestCtx;
-    let mut h = Handle;
+    let ctx = TestCtx;
+    let h = Handle;
 
     handler
         .create(
@@ -319,21 +319,21 @@ async fn delete_invalidates_cache() {
                 mono: 1,
                 val: 10,
             }],
-            &mut ctx,
-            &mut h,
+            ctx.clone(),
+            h.clone(),
         )
         .await
         .unwrap();
 
     // Ensure it’s in cache
-    let got = handler.read(vec![4], &mut ctx, &mut h).await.unwrap();
+    let got = handler.read(vec![4], ctx.clone(), h.clone()).await.unwrap();
     assert!(matches!(&got[0], MaybeArc::Arced(_)));
 
     // Delete
-    handler.delete(vec![4], &mut ctx, &mut h).await.unwrap();
+    handler.delete(vec![4], ctx.clone(), h.clone()).await.unwrap();
 
     // After delete, a read should not return cached value (DB is empty too)
-    let out = handler.read(vec![4], &mut ctx, &mut h).await.unwrap();
+    let out = handler.read(vec![4], ctx.clone(), h.clone()).await.unwrap();
     assert!(out.is_empty(), "should be empty after delete");
 }
 
@@ -346,8 +346,8 @@ async fn use_cache_false_bypasses_map() {
     };
     let handler = handler_with(source, cache);
 
-    let mut ctx = TestCtx;
-    let mut h = Handle;
+    let ctx = TestCtx;
+    let h = Handle;
 
     // Create returns Owned (not Arced) and does not populate cache
     let created = handler
@@ -357,18 +357,18 @@ async fn use_cache_false_bypasses_map() {
                 mono: 1,
                 val: 5,
             }],
-            &mut ctx,
-            &mut h,
+            ctx.clone(),
+            h.clone(),
         )
         .await
         .unwrap();
     assert!(matches!(&created[0], MaybeArc::Owned(_)));
 
     // Read returns Owned; also not cached between calls
-    let out1 = handler.read(vec![5], &mut ctx, &mut h).await.unwrap();
+    let out1 = handler.read(vec![5], ctx.clone(), h.clone()).await.unwrap();
     assert!(matches!(&out1[0], MaybeArc::Owned(_)));
 
-    let out2 = handler.read(vec![5], &mut ctx, &mut h).await.unwrap();
+    let out2 = handler.read(vec![5], ctx, h).await.unwrap();
     assert!(matches!(&out2[0], MaybeArc::Owned(_)));
 }
 
@@ -379,46 +379,71 @@ async fn hooks_are_invoked_and_can_transform() {
         allow_cache: true,
         ..Default::default()
     };
-    let handler = handler_with(source, cache)
-        // before_create: add 100 to all values
-        .install_before_create(make_crudable_hook(|_h: &_, mut items: Vec<Item>, _ctx: &mut TestCtx| async move {
-            for it in &mut items { it.val += 100; }
-            Ok(items)
-        }))
-        // before_read: append an extra id
-        .install_before_read(make_crudable_hook(|_h: &_, mut keys: Vec<u64>, _ctx: &mut TestCtx| async move {
-            keys.push(9999);
-            Ok(keys)
-        }))
-        // after_read: filter out any id=9999
-        .install_after_read(make_crudable_hook(|_h: &_, items: Vec<MaybeArc<Item>>, _ctx: &mut TestCtx| async move {
-            Ok(items.into_iter().filter(|m| match m {
-                MaybeArc::Arced(v) => v.id != 9999,
-                MaybeArc::Owned(v) => v.id != 9999,
-            }).collect())
-        }))
-        // before_update: ensure mono bumps by +1
-        .install_before_update(make_crudable_hook(|_h: &_, mut items: Vec<Item>, _ctx: &mut TestCtx| async move {
-            for it in &mut items { it.mono += 1; }
-            Ok(items)
-        }))
-        // update_comparing: assert monotonicity or rewrite
-        .install_update_comparing(make_crudable_hook(|_h: &_, mut p: cruding_core::UpdateComparingParams<Item>, _ctx: &mut TestCtx| async move {
-            // force mono to be >= current.mono
-            let max_mono = p.current.iter().map(|c| c.mono).max().unwrap_or(0);
-            for it in &mut p.update_payload {
-                if it.mono < max_mono { it.mono = max_mono; }
-            }
-            Ok(p.update_payload)
-        }))
-        // before_delete_resolved: ensure we see real items for deletion
-        .install_before_delete_resolved(make_crudable_hook(|_h: &_, items: Vec<MaybeArc<Item>>, _ctx: &mut TestCtx| async move {
-            assert!(!items.is_empty());
-            Ok(())
-        }));
+    let handler =
+        handler_with(source, cache)
+            // before_create: add 100 to all values
+            .install_before_create(make_crudable_hook(
+                |_h, mut items: Vec<Item>, _ctx: TestCtx, _: Handle| async move {
+                    for it in &mut items {
+                        it.val += 100;
+                    }
+                    Ok(items)
+                },
+            ))
+            // before_read: append an extra id
+            .install_before_read(make_crudable_hook(
+                |_h, mut keys: Vec<u64>, _ctx: TestCtx, _| async move {
+                    keys.push(9999);
+                    Ok(keys)
+                },
+            ))
+            // after_read: filter out any id=9999
+            .install_after_read(make_crudable_hook(
+                |_h, items: Vec<MaybeArc<Item>>, _ctx: TestCtx, _| async move {
+                    Ok(items
+                        .into_iter()
+                        .filter(|m| match m {
+                            MaybeArc::Arced(v) => v.id != 9999,
+                            MaybeArc::Owned(v) => v.id != 9999,
+                        })
+                        .collect())
+                },
+            ))
+            // before_update: ensure mono bumps by +1
+            .install_before_update(make_crudable_hook(
+                |_h, mut items: Vec<Item>, _ctx: TestCtx, _| async move {
+                    for it in &mut items {
+                        it.mono += 1;
+                    }
+                    Ok(items)
+                },
+            ))
+            // update_comparing: assert monotonicity or rewrite
+            .install_update_comparing(make_crudable_hook(
+                |_h,
+                 mut p: cruding_core::UpdateComparingParams<Item>,
+                 _ctx: TestCtx,
+                 _| async move {
+                    // force mono to be >= current.mono
+                    let max_mono = p.current.iter().map(|c| c.mono).max().unwrap_or(0);
+                    for it in &mut p.update_payload {
+                        if it.mono < max_mono {
+                            it.mono = max_mono;
+                        }
+                    }
+                    Ok(p.update_payload)
+                },
+            ))
+            // before_delete_resolved: ensure we see real items for deletion
+            .install_before_delete_resolved(make_crudable_hook(
+                |_h, items: Vec<MaybeArc<Item>>, _ctx: TestCtx, _| async move {
+                    assert!(!items.is_empty());
+                    Ok(())
+                },
+            ));
 
-    let mut ctx = TestCtx;
-    let mut h = Handle;
+    let ctx = TestCtx;
+    let h = Handle;
 
     // Create (before_create adds +100)
     let created = handler
@@ -428,8 +453,8 @@ async fn hooks_are_invoked_and_can_transform() {
                 mono: 1,
                 val: 1,
             }],
-            &mut ctx,
-            &mut h,
+            ctx.clone(),
+            h.clone(),
         )
         .await
         .unwrap();
@@ -439,7 +464,7 @@ async fn hooks_are_invoked_and_can_transform() {
     }
 
     // Read (before_read adds phantom id; after_read removes it)
-    let read = handler.read(vec![6], &mut ctx, &mut h).await.unwrap();
+    let read = handler.read(vec![6], ctx.clone(), h.clone()).await.unwrap();
     assert_eq!(read.len(), 1);
 
     // Update (before_update bumps mono +1, update_comparing enforces >= current)
@@ -450,8 +475,8 @@ async fn hooks_are_invoked_and_can_transform() {
                 mono: 1,
                 val: 42,
             }],
-            &mut ctx,
-            &mut h,
+            ctx.clone(),
+            h.clone(),
         )
         .await
         .unwrap();
@@ -465,7 +490,7 @@ async fn hooks_are_invoked_and_can_transform() {
     }
 
     // Delete (before_delete_resolved asserts we resolved actual items)
-    handler.delete(vec![6], &mut ctx, &mut h).await.unwrap();
+    handler.delete(vec![6], ctx, h).await.unwrap();
 }
 
 use rand::{rng, seq::SliceRandom};
@@ -483,8 +508,8 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
     };
     let handler = Arc::new(handler_with(source, cache));
 
-    let mut ctx = TestCtx;
-    let mut h = Handle;
+    let ctx = TestCtx;
+    let h = Handle;
 
     // Seed initial value
     handler
@@ -494,8 +519,8 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
                 mono: 0,
                 val: 0,
             }],
-            &mut ctx,
-            &mut h,
+            ctx.clone(),
+            h.clone(),
         )
         .await
         .unwrap();
@@ -509,8 +534,8 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
     let writers = versions.into_iter().map(|ver| {
         let handler = handler.clone();
         tokio::spawn(async move {
-            let mut ctx = TestCtx;
-            let mut h = Handle;
+            let ctx = TestCtx;
+            let h = Handle;
             // NOTE: update returns the attempted value (Arced), not necessarily the winner.
             // We don't assert on it here—correctness is validated by readers and final state.
             let _ = handler
@@ -520,8 +545,8 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
                         mono: ver,
                         val: ver as i32,
                     }],
-                    &mut ctx,
-                    &mut h,
+                    ctx,
+                    h,
                 )
                 .await;
         })
@@ -533,9 +558,9 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
         tokio::spawn(async move {
             let mut last = 0i64;
             for _ in 0..1000 {
-                let mut ctx = TestCtx;
-                let mut h = Handle;
-                let got = handler.read(vec![7], &mut ctx, &mut h).await.unwrap();
+                let ctx = TestCtx;
+                let h = Handle;
+                let got = handler.read(vec![7], ctx, h).await.unwrap();
                 if let Some(MaybeArc::Arced(v)) = got.into_iter().next() {
                     // Should never regress due to ArcSwap::rcu monotonic replace
                     assert!(
@@ -563,9 +588,9 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
     sleep(Duration::from_millis(10)).await;
 
     // Final state must be the max version
-    let mut ctx = TestCtx;
-    let mut h = Handle;
-    let final_read = handler.read(vec![7], &mut ctx, &mut h).await.unwrap();
+    let ctx = TestCtx;
+    let h = Handle;
+    let final_read = handler.read(vec![7], ctx, h).await.unwrap();
     let final_item = match &final_read[0] {
         MaybeArc::Arced(v) => v.clone(),
         _ => panic!("expected Arced"),

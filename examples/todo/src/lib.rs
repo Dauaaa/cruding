@@ -16,7 +16,9 @@ use cruding::{
     handler::{CrudableHandlerGetter, CrudableHandlerGetterListExt, CrudableHandlerImpl},
     hook::make_crudable_hook,
     moka,
-    pg_source::{CrudablePostgresSource, PostgresCrudableConnection},
+    pg_source::{
+        CrudablePostgresSource, PostgresCrudableConnection, PostgresCrudableConnectionInner,
+    },
 };
 use sea_orm::DatabaseConnection;
 
@@ -30,6 +32,7 @@ pub mod todo;
 pub mod tags;
 
 /// A very bad error implementation bcs I'm lazy
+#[derive(Debug)]
 pub struct ApiError(Box<dyn std::error::Error + Send + Sync>);
 impl From<sea_orm::DbErr> for ApiError {
     fn from(value: sea_orm::DbErr) -> Self {
@@ -41,10 +44,18 @@ impl IntoResponse for ApiError {
         (StatusCode::INTERNAL_SERVER_ERROR, self.0.to_string()).into_response()
     }
 }
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for ApiError {}
 
-type AppCtx = ();
+type AppCtx = AppState;
 type AxumCtx = ();
-type FullCtx = (AxumCtx, AppCtx);
+// AxumCtx needs to implement IntoRequestParts, AppCtx needs to be instantiated by you handler
+// implementation.
+type FullCtx = Arc<(AxumCtx, AppCtx)>;
 
 type TodoCache =
     moka::future::Cache<<todo::Model as Crudable>::Pkey, Arc<arc_swap::ArcSwap<todo::Model>>>;
@@ -53,9 +64,7 @@ pub type TodoHandler = CrudableHandlerImpl<
     todo::Model,
     TodoCache,
     TodoPostgresSource,
-    // AxumCtx needs to implement IntoRequestParts, AppCtx needs to be instantiated by you handler
-    // implementation.
-    (AxumCtx, AppCtx),
+    FullCtx,
     ApiError,
     // If you add the column here (which should already implement all necessary traits if generated
     // from sea_orm) you get the listing API for free
@@ -69,18 +78,18 @@ pub type TagsHandler = CrudableHandlerImpl<
     tags::Model,
     TagsCache,
     TagsPostgresSource,
-    (AxumCtx, AppCtx),
+    FullCtx,
     ApiError,
     tags::Column,
 >;
 
 #[derive(Clone)]
 pub struct AppState {
-    todo_handler: Arc<TodoHandler>,
-    tags_handler: Arc<TagsHandler>,
-    tags_counter_handler: Arc<TagsCounterHandler>,
-    tags_repo: Arc<dyn TagsRepo + Send + Sync>,
-    db_conn: DatabaseConnection,
+    pub todo_handler: Arc<TodoHandler>,
+    pub tags_handler: Arc<TagsHandler>,
+    pub tags_counter_handler: Arc<TagsCounterHandler>,
+    pub tags_repo: Arc<dyn TagsRepo + Send + Sync>,
+    pub db_conn: DatabaseConnection,
 }
 
 impl CrudableHandlerGetter<todo::Model, FullCtx, PostgresCrudableConnection, ApiError>
@@ -167,10 +176,14 @@ impl CrudableAxumState<todo::Model> for AppState {
     const CRUD_NAME: &'static str = "/todo";
 
     fn new_source_handle(&self) -> Self::SourceHandle {
-        PostgresCrudableConnection::Connection(self.db_conn.clone())
+        PostgresCrudableConnection::new(PostgresCrudableConnectionInner::Connection(
+            self.db_conn.clone(),
+        ))
     }
 
-    fn inner_ctx(&self) -> Self::InnerCtx {}
+    fn inner_ctx(&self) -> Self::InnerCtx {
+        self.clone()
+    }
 }
 
 impl CrudableAxumStateListExt<todo::Model> for AppState {
@@ -187,10 +200,14 @@ impl CrudableAxumState<tags::Model> for AppState {
     const CRUD_NAME: &'static str = "/tags";
 
     fn new_source_handle(&self) -> Self::SourceHandle {
-        PostgresCrudableConnection::Connection(self.db_conn.clone())
+        PostgresCrudableConnection::new(PostgresCrudableConnectionInner::Connection(
+            self.db_conn.clone(),
+        ))
     }
 
-    fn inner_ctx(&self) -> Self::InnerCtx {}
+    fn inner_ctx(&self) -> Self::InnerCtx {
+        self.clone()
+    }
 }
 
 impl CrudableAxumStateListExt<tags::Model> for AppState {
@@ -202,7 +219,7 @@ fn build_todo_handler(cache: TodoCache, source: TodoPostgresSource) -> TodoHandl
     TodoHandler::new(cache, source)
         // this hook will initialize the todo struct
         .install_before_create(make_crudable_hook(
-            |_handler, mut todos: Vec<todo::Model>, _ctx| {
+            |_handler, mut todos: Vec<todo::Model>, _ctx, _| {
                 Box::pin(async move {
                     let now = Utc::now();
                     for todo in &mut todos {
@@ -219,7 +236,8 @@ fn build_todo_handler(cache: TodoCache, source: TodoPostgresSource) -> TodoHandl
                  current,
                  update_payload,
              }: UpdateComparingParams<todo::Model>,
-             _ctx| {
+             _ctx,
+             _| {
                 Box::pin(async move {
                     // the error here shouldn't really happen because current and update_payload
                     // should have the same entries (from the cruding impl)
@@ -255,9 +273,23 @@ fn build_tags_handler(cache: TagsCache, source: TagsPostgresSource) -> TagsHandl
     TagsHandler::new(cache, source)
         // this hook will initialize the todo struct
         .install_before_create(make_crudable_hook(
-            |_handler, mut todos: Vec<tags::Model>, _ctx| {
+            |_handler, mut todos: Vec<tags::Model>, ctx: FullCtx, source_handle| {
                 Box::pin(async move {
                     let now = Utc::now();
+
+                    ctx.1
+                        .tags_repo
+                        .declare_counters(
+                            source_handle,
+                            todos
+                                .iter()
+                                .map(|tag| {
+                                    tags::tags_counter::Model::new(tag.tag().clone(), 1, now)
+                                })
+                                .collect(),
+                        )
+                        .await?;
+
                     for todo in &mut todos {
                         todo.initialize(now);
                     }
@@ -266,7 +298,7 @@ fn build_tags_handler(cache: TagsCache, source: TagsPostgresSource) -> TagsHandl
             },
         ))
         // this hook will call the update function on the todo::Model
-        .install_update_comparing(make_crudable_hook(|_handler, _, _ctx| {
+        .install_update_comparing(make_crudable_hook(|_handler, _, _ctx, _| {
             Box::pin(async move {
                 #[derive(Debug)]
                 struct DisallowUpdate;
@@ -312,11 +344,11 @@ impl AppState {
         }
     }
 
-    pub fn todo_router(&self) -> Router<Self> {
-        CrudRouter::with_list::<todo::Model, _>()
+    pub fn todo_router() -> Router<Self> {
+        CrudRouter::nested_with_list::<todo::Model, _>(None)
     }
 
-    pub fn tags_router(&self) -> Router<Self> {
+    pub fn tags_router() -> Router<Self> {
         CrudRouter::nested_with_list::<tags::Model, _>(Some(
             Router::new()
                 .route("/search", get(tag_like_filter))

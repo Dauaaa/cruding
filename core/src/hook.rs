@@ -1,4 +1,4 @@
-use std::{future::Future, marker::PhantomData};
+use std::{future::Future, marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -11,21 +11,25 @@ pub trait CrudableHook {
     type Error: Send;
     type Ctx: Send;
     type Handler: Send + Sync;
+    type SourceHandle: Send;
 
-    async fn invoke<'a, 'b, 'c>(
+    async fn invoke<'a>(
         &'a self,
-        handler: &'b Self::Handler,
+        handler: Self::Handler,
         input: Self::In,
-        ctx: &'c mut Self::Ctx,
+        ctx: Self::Ctx,
+        handle: Self::SourceHandle,
     ) -> Result<Self::Out, Self::Error>;
 }
 
-pub struct HookFn<Handler, Ctx, In, Out, Error, F> {
+pub struct HookFn<Handler, Ctx, In, Out, SourceHandle, Error, F> {
     f: F,
-    _ph: PhantomData<(Handler, Ctx, In, Out, Error)>,
+    _ph: PhantomData<(Handler, Ctx, In, Out, SourceHandle, Error)>,
 }
 
-impl<Handler, Ctx, In, Out, Error, F> HookFn<Handler, Ctx, In, Out, Error, F> {
+impl<Handler, Ctx, In, Out, SourceHandle, Error, F>
+    HookFn<Handler, Ctx, In, Out, SourceHandle, Error, F>
+{
     pub fn new(f: F) -> Self {
         Self {
             f,
@@ -40,14 +44,16 @@ impl<Handler, Ctx, In, Out, Error, F> HookFn<Handler, Ctx, In, Out, Error, F> {
 ///
 /// Automatically implement hook
 #[async_trait]
-impl<Handler, Ctx, In, Out, Error, F, Fut> CrudableHook for HookFn<Handler, Ctx, In, Out, Error, F>
+impl<Handler, Ctx, In, Out, Error, SourceHandle, F, Fut> CrudableHook
+    for HookFn<Handler, Ctx, In, Out, SourceHandle, Error, F>
 where
     Handler: Send + Sync + 'static,
     Ctx: Send + Sync + 'static,
     In: Send + Sync + 'static,
     Out: Send + Sync + 'static,
     Error: Send + Sync + 'static,
-    F: for<'a> Fn(&'a Handler, In, &'a mut Ctx) -> Fut + Send + Sync + 'static,
+    SourceHandle: Send + Sync + 'static,
+    F: for<'a, 'b> Fn(Handler, In, Ctx, SourceHandle) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Out, Error>> + Send + 'static,
 {
     type In = In;
@@ -55,30 +61,41 @@ where
     type Error = Error;
     type Ctx = Ctx;
     type Handler = Handler;
+    type SourceHandle = SourceHandle;
 
-    async fn invoke(
-        &self,
-        handler: &Self::Handler,
+    async fn invoke<'a>(
+        &'a self,
+        handler: Self::Handler,
         input: Self::In,
-        ctx: &mut Self::Ctx,
+        ctx: Self::Ctx,
+        handle: Self::SourceHandle,
     ) -> Result<Self::Out, Self::Error> {
-        (self.f)(handler, input, ctx).await
+        (self.f)(handler, input, ctx, handle).await
     }
 }
 
-pub fn make_crudable_hook<Handler, In, Ctx, Out, Error, F, Fut>(
+pub fn make_crudable_hook<Handler, In, Ctx, Out, SourceHandle, Error, F, Fut>(
     f: F,
-) -> Box<
-    dyn CrudableHook<In = In, Out = Out, Error = Error, Ctx = Ctx, Handler = Handler> + Send + Sync,
+) -> Arc<
+    dyn CrudableHook<
+            In = In,
+            Out = Out,
+            Error = Error,
+            Ctx = Ctx,
+            SourceHandle = SourceHandle,
+            Handler = Handler,
+        > + Send
+        + Sync,
 >
 where
-    F: for<'a> Fn(&'a Handler, In, &'a mut Ctx) -> Fut + Send + Sync + 'static,
+    F: for<'a, 'b> Fn(Handler, In, Ctx, SourceHandle) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Out, Error>> + Send + 'static,
     In: Send + Sync + 'static,
     Out: Send + Sync + 'static,
     Error: Send + Sync + 'static,
     Ctx: Send + Sync + 'static,
+    SourceHandle: Send + Sync + 'static,
     Handler: Send + Sync + 'static,
 {
-    Box::new(HookFn::new(f))
+    Arc::new(HookFn::new(f))
 }

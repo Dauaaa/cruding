@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::state::{CrudableAxumState, CrudableAxumStateListExt, into_owned_vec};
 use super::types::CrudableAxum;
 use crate::extractors::{AxumListParams, VecOrSingle};
@@ -15,7 +17,7 @@ where
     S: CrudableAxumState<CRUD>,
 {
     let sh = state.new_source_handle();
-    let ctx = (ax_ctx, state.inner_ctx());
+    let ctx = Arc::new((ax_ctx, state.inner_ctx()));
     f(state, ctx, sh)
 }
 
@@ -29,10 +31,11 @@ where
     CRUD::Pkey: From<CRUD::PkeyDe>,
     S: CrudableAxumState<CRUD>,
     S::Error: Send,
-    S::AxumCtx: Send,
+    S::AxumCtx: Send + Sync,
+    S::InnerCtx: Send + Sync,
 {
-    with_ctx(state, ax_ctx, |s, mut ctx, mut sh| async move {
-        let out = s.handler().create(items, &mut ctx, &mut sh).await?;
+    with_ctx(state, ax_ctx, |s, ctx, sh| async move {
+        let out = s.handler().create(items, ctx, sh).await?;
         Ok(Json(into_owned_vec(out)))
     })
     .await
@@ -48,11 +51,12 @@ where
     CRUD::Pkey: From<CRUD::PkeyDe>,
     S: CrudableAxumState<CRUD>,
     S::Error: Send,
-    S::AxumCtx: Send,
+    S::AxumCtx: Send + Sync,
+    S::InnerCtx: Send + Sync,
 {
     let keys = keys.into_iter().map(Into::into).collect();
-    with_ctx(state, ax_ctx, |s, mut ctx, mut sh| async move {
-        let out = s.handler().read(keys, &mut ctx, &mut sh).await?;
+    with_ctx(state, ax_ctx, |s, ctx, sh| async move {
+        let out = s.handler().read(keys, ctx, sh).await?;
         Ok(Json(into_owned_vec(out)))
     })
     .await
@@ -68,10 +72,11 @@ where
     CRUD::Pkey: From<CRUD::PkeyDe>,
     S: CrudableAxumState<CRUD>,
     S::Error: Send,
-    S::AxumCtx: Send,
+    S::AxumCtx: Send + Sync,
+    S::InnerCtx: Send + Sync,
 {
-    with_ctx(state, ax_ctx, |s, mut ctx, mut sh| async move {
-        let out = s.handler().update(items, &mut ctx, &mut sh).await?;
+    with_ctx(state, ax_ctx, |s, ctx, sh| async move {
+        let out = s.handler().update(items, ctx, sh).await?;
         Ok(Json(into_owned_vec(out)))
     })
     .await
@@ -87,11 +92,12 @@ where
     CRUD::Pkey: From<CRUD::PkeyDe>,
     S: CrudableAxumState<CRUD>,
     S::Error: Send,
-    S::AxumCtx: Send,
+    S::AxumCtx: Send + Sync,
+    S::InnerCtx: Send + Sync,
 {
     let keys = keys.into_iter().map(Into::into).collect();
-    with_ctx(state, ax_ctx, |s, mut ctx, mut sh| async move {
-        s.handler().delete(keys, &mut ctx, &mut sh).await?;
+    with_ctx(state, ax_ctx, |s, ctx, sh| async move {
+        s.handler().delete(keys, ctx, sh).await?;
         Ok(axum::http::StatusCode::NO_CONTENT)
     })
     .await
@@ -107,13 +113,11 @@ where
     CRUD::Pkey: From<CRUD::PkeyDe>,
     S: CrudableAxumStateListExt<CRUD>,
     S::Error: Send,
-    S::AxumCtx: Send,
+    S::AxumCtx: Send + Sync,
+    S::InnerCtx: Send + Sync,
 {
-    with_ctx(state, ax_ctx, |s, mut ctx, mut sh| async move {
-        let out = s
-            .handler_list()
-            .read_list(params, &mut ctx, &mut sh)
-            .await?;
+    with_ctx(state, ax_ctx, |s, ctx, sh| async move {
+        let out = s.handler_list().read_list(params, ctx, sh).await?;
         Ok(Json(into_owned_vec(out)))
     })
     .await

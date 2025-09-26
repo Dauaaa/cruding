@@ -14,7 +14,8 @@ impl CrudRouter {
         CRUD: CrudableAxum,
         CRUD::Pkey: From<CRUD::PkeyDe>,
         S: CrudableAxumState<CRUD> + Send + Sync + 'static,
-        S::AxumCtx: Send,
+        S::AxumCtx: Send + Sync,
+        S::InnerCtx: Send + Sync,
         S::Error: Send,
     {
         Router::new()
@@ -29,7 +30,8 @@ impl CrudRouter {
         CRUD: CrudableAxum,
         CRUD::Pkey: From<CRUD::PkeyDe>,
         S: CrudableAxumStateListExt<CRUD> + Send + Sync + 'static,
-        S::AxumCtx: Send,
+        S::AxumCtx: Send + Sync,
+        S::InnerCtx: Send + Sync,
         S::Error: Send,
     {
         Self::base::<CRUD, S>().route("/list", get(super::handlers::read_list::<CRUD, S>))
@@ -40,7 +42,8 @@ impl CrudRouter {
         CRUD: CrudableAxum,
         CRUD::Pkey: From<CRUD::PkeyDe>,
         S: CrudableAxumState<CRUD> + Send + Sync + 'static,
-        S::AxumCtx: Send,
+        S::AxumCtx: Send + Sync,
+        S::InnerCtx: Send + Sync,
         S::Error: Send,
     {
         let r = Self::base::<CRUD, S>();
@@ -53,7 +56,8 @@ impl CrudRouter {
         CRUD: CrudableAxum,
         CRUD::Pkey: From<CRUD::PkeyDe>,
         S: CrudableAxumStateListExt<CRUD> + Send + Sync + 'static,
-        S::AxumCtx: Send,
+        S::AxumCtx: Send + Sync,
+        S::InnerCtx: Send + Sync,
         S::Error: Send,
     {
         let r = Self::with_list::<CRUD, S>();
