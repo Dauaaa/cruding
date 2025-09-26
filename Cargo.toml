@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["apis/axum", "core", "cruding", "common/cruding_qs_list_filter", "sources/postgres"]
+members = ["apis/axum", "core", "cruding", "common/cruding_qs_list_filter", "sources/postgres", "examples/todo"]
 
 [workspace.package]
 license = "MIT"
@@ -60,6 +60,7 @@ schemars = { version = "0.8", features = ["derive"] }
 nom = "8.0.0"
 urlencoding = "2.1.3"
 
+cruding = { path = "./cruding", version = "0.2.2" }
 cruding_core = { path = "./core", version = "0.2.2" }
 cruding_pg_source = { path = "./sources/postgres", version = "0.2.2"  }
 cruding_axum_api = { path = "./apis/axum", version = "0.2.2"  }

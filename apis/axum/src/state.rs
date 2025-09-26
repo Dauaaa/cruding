@@ -2,20 +2,20 @@ use super::types::CrudableAxum;
 use axum::extract::FromRequestParts;
 use axum::response::IntoResponse;
 
-pub trait CrudableAxumState:
+pub trait CrudableAxumState<CRUD>:
     cruding_core::handler::CrudableHandlerGetter<
-        Self::CRUD,
+        CRUD,
         super::types::ReqCtx<Self::AxumCtx, Self::InnerCtx>,
         Self::SourceHandle,
         Self::Error,
     > + Clone
 where
-    <Self::CRUD as cruding_core::Crudable>::Pkey: From<<Self::CRUD as CrudableAxum>::PkeyDe>,
+    CRUD: CrudableAxum,
+    <CRUD as cruding_core::Crudable>::Pkey: From<<CRUD as CrudableAxum>::PkeyDe>,
 {
     type AxumCtx: FromRequestParts<Self>;
     type InnerCtx: Send + 'static;
     type SourceHandle: Send;
-    type CRUD: CrudableAxum;
     type Error: IntoResponse;
 
     const CRUD_NAME: &'static str;
@@ -25,15 +25,18 @@ where
 }
 
 /// Optional list extension
-pub trait CrudableAxumStateListExt:
-    CrudableAxumState
+pub trait CrudableAxumStateListExt<CRUD>:
+    CrudableAxumState<CRUD>
     + cruding_core::handler::CrudableHandlerGetterListExt<
-        Self::CRUD,
+        CRUD,
         super::types::ReqCtx<Self::AxumCtx, Self::InnerCtx>,
         Self::SourceHandle,
         Self::Error,
         Self::Column,
     >
+where
+    CRUD: CrudableAxum,
+    <CRUD as cruding_core::Crudable>::Pkey: From<<CRUD as CrudableAxum>::PkeyDe>,
 {
     type Column: super::types::ColumnParse;
 }

@@ -1,0 +1,13 @@
+[package]
+name = "cruding_todo_example"
+edition = "2024"
+
+[dependencies]
+cruding = { workspace = true }
+sea-orm = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+arc-swap = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }

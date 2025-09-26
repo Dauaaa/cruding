@@ -214,11 +214,10 @@ impl CrudableHandlerGetterListExt<Thing, (AxumCtx, InnerCtx), SrcHandle, ApiErro
         &self.handler
     }
 }
-impl CrudableAxumState for AppState
+impl CrudableAxumState<Thing> for AppState
 where
     Thing: CrudableAxum,
 {
-    type CRUD = Thing;
     type AxumCtx = AxumCtx;
     type InnerCtx = InnerCtx;
     type SourceHandle = SrcHandle;
@@ -231,7 +230,7 @@ where
         self.inner.clone()
     }
 }
-impl CrudableAxumStateListExt for AppState {
+impl CrudableAxumStateListExt<Thing> for AppState {
     type Column = Column;
 }
 
@@ -241,7 +240,8 @@ fn mk_app() -> (Router<()>, AppState) {
         inner: InnerCtx { shard: 7 },
     };
     let plugin = Router::new().route("/ping", get(|| async { "pong" }));
-    let app = CrudRouter::nested_with_list::<AppState>(Some(plugin)).with_state(state.clone());
+    let app =
+        CrudRouter::nested_with_list::<Thing, AppState>(Some(plugin)).with_state(state.clone());
     (app, state)
 }
 

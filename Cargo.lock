@@ -640,6 +640,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cruding_todo_example"
+version = "0.0.0"
+dependencies = [
+ "arc-swap",
+ "axum",
+ "chrono",
+ "cruding",
+ "sea-orm",
+ "serde",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -4,24 +4,32 @@ use crate::extractors::{AxumListParams, VecOrSingle};
 use axum::response::IntoResponse;
 use axum::{Json, extract::State};
 
-fn with_ctx<S: CrudableAxumState, R>(
+fn with_ctx<CRUD, S, R>(
     state: S,
     ax_ctx: S::AxumCtx,
     f: impl FnOnce(S, super::types::ReqCtx<S::AxumCtx, S::InnerCtx>, S::SourceHandle) -> R,
-) -> R {
+) -> R
+where
+    CRUD: CrudableAxum,
+    CRUD::Pkey: From<CRUD::PkeyDe>,
+    S: CrudableAxumState<CRUD>,
+{
     let sh = state.new_source_handle();
     let ctx = (ax_ctx, state.inner_ctx());
     f(state, ctx, sh)
 }
 
-pub async fn create<S: CrudableAxumState>(
+pub async fn create<CRUD, S>(
     State(state): State<S>,
     ax_ctx: S::AxumCtx,
-    Json(VecOrSingle(items)): Json<VecOrSingle<S::CRUD>>,
+    Json(VecOrSingle(items)): Json<VecOrSingle<CRUD>>,
 ) -> Result<impl IntoResponse, S::Error>
 where
-    <S as CrudableAxumState>::Error: Send,
-    <S as CrudableAxumState>::AxumCtx: Send,
+    CRUD: CrudableAxum,
+    CRUD::Pkey: From<CRUD::PkeyDe>,
+    S: CrudableAxumState<CRUD>,
+    S::Error: Send,
+    S::AxumCtx: Send,
 {
     with_ctx(state, ax_ctx, |s, mut ctx, mut sh| async move {
         let out = s.handler().create(items, &mut ctx, &mut sh).await?;
@@ -30,14 +38,17 @@ where
     .await
 }
 
-pub async fn read<S: CrudableAxumState>(
+pub async fn read<CRUD, S>(
     State(state): State<S>,
     ax_ctx: S::AxumCtx,
-    Json(VecOrSingle(keys)): Json<VecOrSingle<<S::CRUD as CrudableAxum>::PkeyDe>>,
+    Json(VecOrSingle(keys)): Json<VecOrSingle<<CRUD as CrudableAxum>::PkeyDe>>,
 ) -> Result<impl IntoResponse, S::Error>
 where
-    <S as CrudableAxumState>::Error: Send,
-    <S as CrudableAxumState>::AxumCtx: Send,
+    CRUD: CrudableAxum,
+    CRUD::Pkey: From<CRUD::PkeyDe>,
+    S: CrudableAxumState<CRUD>,
+    S::Error: Send,
+    S::AxumCtx: Send,
 {
     let keys = keys.into_iter().map(Into::into).collect();
     with_ctx(state, ax_ctx, |s, mut ctx, mut sh| async move {
@@ -47,14 +58,17 @@ where
     .await
 }
 
-pub async fn update<S: CrudableAxumState>(
+pub async fn update<CRUD, S>(
     State(state): State<S>,
     ax_ctx: S::AxumCtx,
-    Json(VecOrSingle(items)): Json<VecOrSingle<S::CRUD>>,
+    Json(VecOrSingle(items)): Json<VecOrSingle<CRUD>>,
 ) -> Result<impl IntoResponse, S::Error>
 where
-    <S as CrudableAxumState>::Error: Send,
-    <S as CrudableAxumState>::AxumCtx: Send,
+    CRUD: CrudableAxum,
+    CRUD::Pkey: From<CRUD::PkeyDe>,
+    S: CrudableAxumState<CRUD>,
+    S::Error: Send,
+    S::AxumCtx: Send,
 {
     with_ctx(state, ax_ctx, |s, mut ctx, mut sh| async move {
         let out = s.handler().update(items, &mut ctx, &mut sh).await?;
@@ -63,14 +77,17 @@ where
     .await
 }
 
-pub async fn delete<S: CrudableAxumState>(
+pub async fn delete<CRUD, S>(
     State(state): State<S>,
     ax_ctx: S::AxumCtx,
-    Json(VecOrSingle(keys)): Json<VecOrSingle<<S::CRUD as CrudableAxum>::PkeyDe>>,
+    Json(VecOrSingle(keys)): Json<VecOrSingle<<CRUD as CrudableAxum>::PkeyDe>>,
 ) -> Result<impl IntoResponse, S::Error>
 where
-    <S as CrudableAxumState>::Error: Send,
-    <S as CrudableAxumState>::AxumCtx: Send,
+    CRUD: CrudableAxum,
+    CRUD::Pkey: From<CRUD::PkeyDe>,
+    S: CrudableAxumState<CRUD>,
+    S::Error: Send,
+    S::AxumCtx: Send,
 {
     let keys = keys.into_iter().map(Into::into).collect();
     with_ctx(state, ax_ctx, |s, mut ctx, mut sh| async move {
@@ -80,14 +97,17 @@ where
     .await
 }
 
-pub async fn read_list<S: CrudableAxumStateListExt>(
+pub async fn read_list<CRUD, S>(
     State(state): State<S>,
     ax_ctx: S::AxumCtx,
     AxumListParams(params): AxumListParams<S::Column>,
 ) -> Result<impl IntoResponse, S::Error>
 where
-    <S as CrudableAxumState>::Error: Send,
-    <S as CrudableAxumState>::AxumCtx: Send,
+    CRUD: CrudableAxum,
+    CRUD::Pkey: From<CRUD::PkeyDe>,
+    S: CrudableAxumStateListExt<CRUD>,
+    S::Error: Send,
+    S::AxumCtx: Send,
 {
     with_ctx(state, ax_ctx, |s, mut ctx, mut sh| async move {
         let out = s
