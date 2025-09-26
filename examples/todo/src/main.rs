@@ -31,6 +31,15 @@ async fn connect_and_prepare() -> DatabaseConnection {
     .await
     .ok();
 
+    let schema = Schema::new(DatabaseBackend::Postgres);
+    let mut stmt = schema.create_table_from_entity(cruding_todo_example::tags::TagsCounterEntity);
+    conn.execute(Statement::from_string(
+        DatabaseBackend::Postgres,
+        stmt.if_not_exists().to_string(PostgresQueryBuilder),
+    ))
+    .await
+    .ok();
+
     conn
 }
 

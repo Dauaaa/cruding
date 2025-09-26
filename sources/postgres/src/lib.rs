@@ -17,8 +17,8 @@ use crate::serde_json_to_sea_orm_vals::{json_to_value_for_column, json_to_value_
 
 pub trait PostgresCrudableTable: EntityTrait
 where
-    <Self as EntityTrait>::Model: Crudable,
-    <Self as EntityTrait>::Column: Iterable + PartialEq,
+    Self::Model: Crudable,
+    Self::Column: Iterable + PartialEq,
 {
     fn get_pkey_filter(keys: &[<Self::Model as Crudable>::Pkey]) -> impl IntoCondition;
     /// Returns a vector with the primary key columns
@@ -84,6 +84,14 @@ impl PostgresCrudableConnection {
         }
 
         Ok(())
+    }
+
+    pub fn get_conn(&self) -> &(dyn ConnectionTrait + Send + Sync) {
+        match self {
+            PostgresCrudableConnection::Connection(c) => c,
+            PostgresCrudableConnection::OwnedTransaction(_, tx) => tx,
+            PostgresCrudableConnection::BorrowedTransaction(tx) => tx.as_ref(),
+        }
     }
 }
 
@@ -306,6 +314,11 @@ where
     ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
         let mut q =
             CRUDTable::find().filter(<CRUDTable as PostgresCrudableTable>::get_pkey_filter(keys));
+
+        // avoid deadlocks with multi batch updates
+        for col in CRUDTable::get_pkey_columns() {
+            q = q.order_by_asc(col);
+        }
 
         if self.lock_for_update {
             handle.maybe_begin_transaction().await?;

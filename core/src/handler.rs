@@ -11,6 +11,18 @@ pub enum MaybeArc<T> {
     Owned(T),
 }
 
+impl<T> MaybeArc<T>
+where
+    T: Clone,
+{
+    pub fn take_or_clone(self) -> T {
+        match self {
+            MaybeArc::Arced(arc_t) => (*arc_t).clone(),
+            MaybeArc::Owned(t) => t,
+        }
+    }
+}
+
 type CreateUpdateHook<Handler, CRUD, Ctx, Error> = dyn CrudableHook<In = Vec<CRUD>, Out = Vec<CRUD>, Error = Error, Ctx = Ctx, Handler = Handler>
     + Send
     + Sync
