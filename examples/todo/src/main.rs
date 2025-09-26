@@ -2,6 +2,7 @@
 use axum::{
     Router,
     http::{Request, header::CONTENT_TYPE},
+    response::Response,
 };
 use cruding::{
     handler::CrudableHandlerListExt, list::CrudingListPagination,
@@ -9,9 +10,7 @@ use cruding::{
 };
 use cruding_todo_example::{AppState, todo::TodoStatus};
 use futures::TryStreamExt;
-use sea_orm::{
-    ConnectionTrait, Database, DatabaseConnection,
-};
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
 use serde::{Deserialize, Serialize};
 use tower::Service;
 use tracing::level_filters::LevelFilter;
@@ -239,6 +238,43 @@ async fn main() {
     let tag_counter = tag_counters.pop().unwrap();
     assert_eq!(tag_counter.as_ref().tag(), "hehexd");
     assert_eq!(tag_counter.as_ref().count(), 2);
+
+    let mut read_todos: Vec<cruding_todo_example::todo::Model> = call(
+        &mut app,
+        todo_read_request(vec![TodoId {
+            id_1: todo.id_1(),
+            id_2: todo.id_2(),
+        }]),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(read_todos.len(), 1);
+
+    let read_todo = read_todos.pop().unwrap();
+    assert_eq!(read_todo.name, todo.name);
+    assert_eq!(read_todo.description, todo.description);
+    assert_eq!(read_todo.status, todo.status);
+
+    call_no_body(
+        &mut app,
+        todo_delete_request(vec![TodoId {
+            id_1: todo.id_1(),
+            id_2: todo.id_2(),
+        }]),
+    )
+    .await
+    .unwrap();
+    let read_todos: Vec<cruding_todo_example::todo::Model> = call(
+        &mut app,
+        todo_read_request(vec![TodoId {
+            id_1: todo.id_1(),
+            id_2: todo.id_2(),
+        }]),
+    )
+    .await
+    .unwrap();
+    assert!(read_todos.is_empty());
 }
 
 fn build_todo_tag(
@@ -272,17 +308,29 @@ async fn call<T: for<'de> Deserialize<'de>>(
     )?)
 }
 
-#[derive(Debug, Serialize)]
+#[tracing::instrument(skip(app))]
+async fn call_no_body(
+    app: &mut Router<()>,
+    req: Request<axum::body::Body>,
+) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+    let response = app.call(req).await?;
+
+    tracing::info!("{}", response.status());
+
+    Ok(response)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct CreateTodoRequest {
     name: String,
     description: String,
     status: TodoStatus,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TodoId {
     id_1: Uuid,
-    id_2: u64,
+    id_2: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -313,6 +361,15 @@ fn todo_update_request(input: Vec<CreateTodoRequest>) -> Request<axum::body::Bod
 fn todo_delete_request(input: Vec<TodoId>) -> Request<axum::body::Body> {
     Request::builder()
         .uri("/todo/delete")
+        .method("POST")
+        .header(CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(serde_json::to_vec(&input).unwrap()))
+        .unwrap()
+}
+
+fn todo_read_request(input: Vec<TodoId>) -> Request<axum::body::Body> {
+    Request::builder()
+        .uri("/todo/read")
         .method("POST")
         .header(CONTENT_TYPE, "application/json")
         .body(axum::body::Body::from(serde_json::to_vec(&input).unwrap()))

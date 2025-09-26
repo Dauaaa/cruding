@@ -12,7 +12,10 @@ use cruding_core::{
 };
 use cruding_pg_source::{
     // <-- change to your crate name
-    CrudablePostgresSource, PostgresCrudableConnection, PostgresCrudableConnectionInner, PostgresCrudableTable
+    CrudablePostgresSource,
+    PostgresCrudableConnection,
+    PostgresCrudableConnectionInner,
+    PostgresCrudableTable,
 };
 
 use sea_orm::{
@@ -441,7 +444,9 @@ async fn read_list_to_ids_inside_borrowed_tx() {
     let src = source(false, conn.clone());
 
     let tx = conn.begin().await.unwrap();
-    let handle = PostgresCrudableConnection::new(PostgresCrudableConnectionInner::BorrowedTransaction(Arc::new(tx)));
+    let handle = PostgresCrudableConnection::new(
+        PostgresCrudableConnectionInner::BorrowedTransaction(Arc::new(tx)),
+    );
     let p = params(
         vec![CrudingListFilter {
             column: Column::I,

@@ -330,7 +330,10 @@ async fn delete_invalidates_cache() {
     assert!(matches!(&got[0], MaybeArc::Arced(_)));
 
     // Delete
-    handler.delete(vec![4], ctx.clone(), h.clone()).await.unwrap();
+    handler
+        .delete(vec![4], ctx.clone(), h.clone())
+        .await
+        .unwrap();
 
     // After delete, a read should not return cached value (DB is empty too)
     let out = handler.read(vec![4], ctx.clone(), h.clone()).await.unwrap();
@@ -379,68 +382,64 @@ async fn hooks_are_invoked_and_can_transform() {
         allow_cache: true,
         ..Default::default()
     };
-    let handler =
-        handler_with(source, cache)
-            // before_create: add 100 to all values
-            .install_before_create(make_crudable_hook(
-                |_h, mut items: Vec<Item>, _ctx: TestCtx, _: Handle| async move {
-                    for it in &mut items {
-                        it.val += 100;
+    let handler = handler_with(source, cache)
+        // before_create: add 100 to all values
+        .install_before_create(make_crudable_hook(
+            |_h, mut items: Vec<Item>, _ctx: TestCtx, _: Handle| async move {
+                for it in &mut items {
+                    it.val += 100;
+                }
+                Ok(items)
+            },
+        ))
+        // before_read: append an extra id
+        .install_before_read(make_crudable_hook(
+            |_h, mut keys: Vec<u64>, _ctx: TestCtx, _| async move {
+                keys.push(9999);
+                Ok(keys)
+            },
+        ))
+        // after_read: filter out any id=9999
+        .install_after_read(make_crudable_hook(
+            |_h, items: Vec<MaybeArc<Item>>, _ctx: TestCtx, _| async move {
+                Ok(items
+                    .into_iter()
+                    .filter(|m| match m {
+                        MaybeArc::Arced(v) => v.id != 9999,
+                        MaybeArc::Owned(v) => v.id != 9999,
+                    })
+                    .collect())
+            },
+        ))
+        // before_update: ensure mono bumps by +1
+        .install_before_update(make_crudable_hook(
+            |_h, mut items: Vec<Item>, _ctx: TestCtx, _| async move {
+                for it in &mut items {
+                    it.mono += 1;
+                }
+                Ok(items)
+            },
+        ))
+        // update_comparing: assert monotonicity or rewrite
+        .install_update_comparing(make_crudable_hook(
+            |_h, mut p: cruding_core::UpdateComparingParams<Item>, _ctx: TestCtx, _| async move {
+                // force mono to be >= current.mono
+                let max_mono = p.current.iter().map(|c| c.mono).max().unwrap_or(0);
+                for it in &mut p.update_payload {
+                    if it.mono < max_mono {
+                        it.mono = max_mono;
                     }
-                    Ok(items)
-                },
-            ))
-            // before_read: append an extra id
-            .install_before_read(make_crudable_hook(
-                |_h, mut keys: Vec<u64>, _ctx: TestCtx, _| async move {
-                    keys.push(9999);
-                    Ok(keys)
-                },
-            ))
-            // after_read: filter out any id=9999
-            .install_after_read(make_crudable_hook(
-                |_h, items: Vec<MaybeArc<Item>>, _ctx: TestCtx, _| async move {
-                    Ok(items
-                        .into_iter()
-                        .filter(|m| match m {
-                            MaybeArc::Arced(v) => v.id != 9999,
-                            MaybeArc::Owned(v) => v.id != 9999,
-                        })
-                        .collect())
-                },
-            ))
-            // before_update: ensure mono bumps by +1
-            .install_before_update(make_crudable_hook(
-                |_h, mut items: Vec<Item>, _ctx: TestCtx, _| async move {
-                    for it in &mut items {
-                        it.mono += 1;
-                    }
-                    Ok(items)
-                },
-            ))
-            // update_comparing: assert monotonicity or rewrite
-            .install_update_comparing(make_crudable_hook(
-                |_h,
-                 mut p: cruding_core::UpdateComparingParams<Item>,
-                 _ctx: TestCtx,
-                 _| async move {
-                    // force mono to be >= current.mono
-                    let max_mono = p.current.iter().map(|c| c.mono).max().unwrap_or(0);
-                    for it in &mut p.update_payload {
-                        if it.mono < max_mono {
-                            it.mono = max_mono;
-                        }
-                    }
-                    Ok(p.update_payload)
-                },
-            ))
-            // before_delete_resolved: ensure we see real items for deletion
-            .install_before_delete_resolved(make_crudable_hook(
-                |_h, items: Vec<MaybeArc<Item>>, _ctx: TestCtx, _| async move {
-                    assert!(!items.is_empty());
-                    Ok(())
-                },
-            ));
+                }
+                Ok(p.update_payload)
+            },
+        ))
+        // before_delete_resolved: ensure we see real items for deletion
+        .install_before_delete_resolved(make_crudable_hook(
+            |_h, items: Vec<MaybeArc<Item>>, _ctx: TestCtx, _| async move {
+                assert!(!items.is_empty());
+                Ok(())
+            },
+        ));
 
     let ctx = TestCtx;
     let h = Handle;

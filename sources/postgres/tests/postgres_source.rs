@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use cruding_core::{Crudable, CrudableSource};
 use cruding_pg_source::{
-    CrudablePostgresSource, PostgresCrudableConnection, PostgresCrudableConnectionInner, PostgresCrudableTable
+    CrudablePostgresSource, PostgresCrudableConnection, PostgresCrudableConnectionInner,
+    PostgresCrudableTable,
 };
 
 use sea_orm::{
@@ -284,7 +285,12 @@ async fn read_for_update_owned_and_borrowed_behave() {
     // Case B: owned tx -> remains our responsibility, but your impl auto-commits in read_for_update;
     // verify handle reset to Connection
     let h2 = src.new_source_handle();
-    h2.get_conn().write().await.maybe_begin_transaction().await.unwrap();
+    h2.get_conn()
+        .write()
+        .await
+        .maybe_begin_transaction()
+        .await
+        .unwrap();
     let rows2 = CrudableSource::<Model>::read_for_update(&src, &[7], h2.clone())
         .await
         .unwrap();
@@ -296,7 +302,9 @@ async fn read_for_update_owned_and_borrowed_behave() {
 
     // Case C: borrowed tx -> must NOT be committed by the source; handle stays Borrowed
     let tx = conn.begin().await.unwrap();
-    let h3 = PostgresCrudableConnection::new(PostgresCrudableConnectionInner::BorrowedTransaction(Arc::new(tx)));
+    let h3 = PostgresCrudableConnection::new(PostgresCrudableConnectionInner::BorrowedTransaction(
+        Arc::new(tx),
+    ));
     let rows3 = CrudableSource::<Model>::read_for_update(&src, &[7], h3.clone())
         .await
         .unwrap();
@@ -319,12 +327,19 @@ async fn use_cache_policy_is_false_inside_tx_true_otherwise() {
 
     // owned transaction => bypass cache
     let h2 = src.new_source_handle();
-    h2.get_conn().write().await.maybe_begin_transaction().await.unwrap();
+    h2.get_conn()
+        .write()
+        .await
+        .maybe_begin_transaction()
+        .await
+        .unwrap();
     assert!(!CrudableSource::<Model>::should_use_cache(&src, h2).await);
 
     // borrowed transaction => bypass cache
     let tx = conn.begin().await.unwrap();
-    let h3 = PostgresCrudableConnection::new(PostgresCrudableConnectionInner::BorrowedTransaction(Arc::new(tx)));
+    let h3 = PostgresCrudableConnection::new(PostgresCrudableConnectionInner::BorrowedTransaction(
+        Arc::new(tx),
+    ));
     assert!(!CrudableSource::<Model>::should_use_cache(&src, h3).await);
 }
 
@@ -335,7 +350,12 @@ async fn end_to_end_inside_owned_tx() {
     let src = source(true, conn);
 
     let h = src.new_source_handle();
-    h.get_conn().write().await.maybe_begin_transaction().await.unwrap();
+    h.get_conn()
+        .write()
+        .await
+        .maybe_begin_transaction()
+        .await
+        .unwrap();
 
     // create
     let c = CrudableSource::<Model>::create(

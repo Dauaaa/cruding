@@ -194,8 +194,12 @@ struct AppState {
 impl CrudableHandlerGetter<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError> for AppState {
     fn handler(
         &self,
-    ) -> &dyn cruding_core::handler::CrudableHandler<Thing, Arc<(AxumCtx, InnerCtx)>, SrcHandle, ApiError>
-    {
+    ) -> &dyn cruding_core::handler::CrudableHandler<
+        Thing,
+        Arc<(AxumCtx, InnerCtx)>,
+        SrcHandle,
+        ApiError,
+    > {
         &self.handler
     }
 }
