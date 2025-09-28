@@ -664,6 +664,7 @@ dependencies = [
  "axum",
  "chrono",
  "cruding",
+ "cruding_macros",
  "futures",
  "sea-orm",
  "serde",

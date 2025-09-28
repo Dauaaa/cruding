@@ -3,12 +3,7 @@ mod crudable_seaorm_impl;
 mod cruding_axum_state_impl;
 
 use proc_macro::TokenStream;
-use syn::{
-    Attribute, DeriveInput, Meta, MetaList, Token,
-    parse::{Parse, ParseBuffer, ParseStream},
-    parse_macro_input,
-    punctuated::Punctuated,
-};
+use syn::{DeriveInput, Token, parse_macro_input, punctuated::Punctuated};
 
 #[proc_macro_attribute]
 pub fn cruding_axum_state(attr: TokenStream, item: TokenStream) -> TokenStream {

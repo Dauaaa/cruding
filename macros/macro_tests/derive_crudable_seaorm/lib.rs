@@ -7,7 +7,7 @@ mod todo {
     use serde::{Deserialize, Serialize};
 
     // normal sea_orm stuff
-    #[crudable_seaorm]
+    #[crudable_seaorm(axum)]
     #[derive(Debug, Clone, Serialize, Deserialize, DeriveEntityModel)]
     #[sea_orm(table_name = "todos")]
     pub struct Model {
@@ -21,7 +21,7 @@ mod todo {
         id_1: Uuid,
         #[sea_orm(primary_key, auto_increment = false)]
         #[serde(default)]
-        id_2: i64,
+        id_2: String,
         #[serde(default)]
         creation_time: DateTime<Utc>,
         #[serde(default)]

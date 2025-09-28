@@ -1,12 +1,10 @@
-// crates/macros/src/lib.rs
-
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
-use syn::Token;
 use syn::punctuated::Punctuated;
 use syn::{
     Data, DataStruct, DeriveInput, Error, Expr, Fields, Lit, Meta, MetaNameValue, Result, Type,
 };
+use syn::{Index, Token};
 
 use crate::common::{parse_from_attr, parse_from_metas};
 
@@ -70,14 +68,14 @@ pub fn crudable_seaorm_impl(
         .clone()?;
 
     // Build Pkey type + expr preserving order of PK fields as declared.
-    let (pkey_type_tokens, pkey_expr_tokens) = build_pkey_tokens(&config);
+    let pkey_type_tokens = build_pkey_types(&config);
 
     // Names and helpers
     let struct_ident = input.ident.clone();
     let column_ident = Ident::new("Column", Span::call_site());
 
     // Axum helper: <SingularPascal(TableName)>Pkey (e.g., todos -> TodoPkey)
-    let axum_impl = build_axum_impl(&config, &pkey_type_tokens, &pkey_expr_tokens, &struct_ident)?;
+    let axum_impl = build_axum_impl(&config, &pkey_type_tokens, &struct_ident)?;
 
     // Generate code sections
     let column_partialeq_impl = quote! {
@@ -88,17 +86,58 @@ pub fn crudable_seaorm_impl(
         }
     };
 
-    let crudable_impl = quote! {
-        impl ::cruding::Crudable for #struct_ident {
-            type Pkey = #pkey_type_tokens;
-            type MonoField = #mono_ty;
+    let crudable_impl = {
+        let ids = config
+            .pkeys
+            .iter()
+            .map(|(ident, _)| ident)
+            .map(|id| quote! { self. #id .clone() });
 
-            fn pkey(&self) -> Self::Pkey {
-                #pkey_expr_tokens
+        quote! {
+            impl ::cruding::Crudable for #struct_ident {
+                type Pkey = #pkey_type_tokens;
+                type MonoField = #mono_ty;
+
+                fn pkey(&self) -> Self::Pkey {
+                    (#(#ids),*)
+                }
+
+                fn mono_field(&self) -> Self::MonoField {
+                    self.#mono_ident .clone()
+                }
             }
+        }
+    };
 
-            fn mono_field(&self) -> Self::MonoField {
-                self.#mono_ident
+    let table_impl = {
+        let columns = config
+            .pkeys
+            .iter()
+            .map(|(ident, _)| Ident::new(&pascal_case(&ident.to_string()), ident.span()));
+        let columns_2 = columns.clone();
+        let ids = if config.pkeys.len() == 1 {
+            vec![quote! { Expr::value(ids) }]
+        } else {
+            (0..config.pkeys.len())
+                .map(Index::from)
+                .map(|id| quote! { Expr::value(ids. #id .clone()) })
+                .collect::<Vec<_>>()
+        };
+
+        quote! {
+            impl ::cruding::pg_source::PostgresCrudableTable for Entity {
+                fn get_pkey_filter(
+                    keys: &[<Self::Model as ::cruding::Crudable>::Pkey],
+                ) -> impl ::sea_orm::sea_query::IntoCondition {
+                    ::sea_orm::sea_query::Expr::tuple([#(::sea_orm::sea_query::Expr::column(Column:: #columns)),*]).is_in(
+                        keys.into_iter()
+                        .map(|ids| ::sea_orm::sea_query::Expr::tuple([#(#ids,)*])),
+                    )
+                }
+
+                fn get_pkey_columns() -> Vec<Self::Column> {
+                    vec![#(Column:: #columns_2),*]
+                }
             }
         }
     };
@@ -108,6 +147,7 @@ pub fn crudable_seaorm_impl(
         #column_partialeq_impl
         #crudable_impl
         #axum_impl
+        #table_impl
     };
 
     Ok(expanded)
@@ -198,7 +238,6 @@ fn parse_field_attrs(meta: Meta, field: (&Ident, &Type), config: &mut Config) ->
         };
 
         for meta in metas {
-            println!("HEY: {meta:?}");
             let Meta::Path(path) = meta else { continue };
             if !path.is_ident("mono") {
                 continue;
@@ -211,16 +250,15 @@ fn parse_field_attrs(meta: Meta, field: (&Ident, &Type), config: &mut Config) ->
     Ok(())
 }
 
-fn build_pkey_tokens(config: &Config) -> (TokenStream, TokenStream) {
-    let (ids, tys) = config.pkeys.iter().cloned().unzip::<_, _, Vec<_>, Vec<_>>();
+fn build_pkey_types(config: &Config) -> TokenStream {
+    let tys = config.pkeys.iter().map(|(_, ty)| ty);
 
-    (quote! { (#(#tys),*) }, quote! { (#(self.#ids),*) })
+    quote! { (#(#tys),*) }
 }
 
 fn build_axum_impl(
     config: &Config,
     pkey_type_tokens: &TokenStream,
-    pkey_expr_tokens: &TokenStream,
     struct_ident: &Ident,
 ) -> Result<Option<TokenStream>> {
     if !config.impl_axum {
@@ -231,18 +269,22 @@ fn build_axum_impl(
         return Err(Error::new(Span::call_site(), "Missing sea_orm table_name"));
     };
 
-    let pkey_de_ident = Ident::new(&pascal_case(&singularize(table_name)), Span::call_site());
+    let pkey_de_ident = Ident::new(
+        &format!("{}Pkey", pascal_case(&singularize(table_name))),
+        Span::call_site(),
+    );
     let pkey_de_struct_fields = config.pkeys.iter().map(|(id, ty)| quote! { pub #id: #ty });
+    let pkey_expr_tokens = config.pkeys.iter().map(|(id, _)| quote! { value. #id });
     let from_impl = quote! {
         impl From<#pkey_de_ident> for #pkey_type_tokens {
-            fn from(value: #pkey_de_ident) -> Self { #pkey_expr_tokens }
+            fn from(value: #pkey_de_ident) -> Self { (#(#pkey_expr_tokens),*) }
         }
     };
     Ok(Some(quote! {
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub struct #pkey_de_ident { #( #pkey_de_struct_fields, )* }
         #from_impl
-        impl ::cruding::CrudableAxum for #struct_ident { type PkeyDe = #pkey_de_ident; }
+        impl ::cruding::axum_api::prelude::CrudableAxum for #struct_ident { type PkeyDe = #pkey_de_ident; }
     }))
 }
 
