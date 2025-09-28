@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use cruding::{Crudable, axum_api::types::CrudableAxum, pg_source::PostgresCrudableTable};
 use sea_orm::{DeriveEntityModel, prelude::*};
 use serde::{Deserialize, Serialize};
 
 // normal sea_orm stuff
+#[cruding_macros::crudable_seaorm(axum)]
 #[derive(Debug, Clone, Serialize, Deserialize, DeriveEntityModel)]
 #[sea_orm(table_name = "todos")]
 pub struct Model {
@@ -21,6 +21,7 @@ pub struct Model {
     #[serde(default)]
     creation_time: DateTime<Utc>,
     #[serde(default)]
+    #[crudable(mono)]
     update_time: DateTime<Utc>,
     #[serde(default)]
     done_time: Option<DateTime<Utc>>,
@@ -87,61 +88,5 @@ impl Model {
 
     pub fn id_2(&self) -> i64 {
         self.id_2
-    }
-}
-
-// start of cruding stuff
-
-// Need to implement this for cruding stuff, rust should provide this implementation as a code
-// action
-impl PartialEq for Column {
-    fn eq(&self, other: &Self) -> bool {
-        core::mem::discriminant(self) == core::mem::discriminant(other)
-    }
-}
-
-impl Crudable for Model {
-    // This model has a composite primary key. It's important that the order is maintained!
-    type Pkey = (Uuid, i64);
-    type MonoField = DateTime<Utc>;
-
-    fn pkey(&self) -> Self::Pkey {
-        (self.id_1, self.id_2)
-    }
-
-    fn mono_field(&self) -> Self::MonoField {
-        self.update_time
-    }
-}
-
-/// Helper to make queries about todo
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TodoIdHelper {
-    id_1: Uuid,
-    id_2: i64,
-}
-
-impl From<TodoIdHelper> for (Uuid, i64) {
-    fn from(value: TodoIdHelper) -> Self {
-        (value.id_1, value.id_2)
-    }
-}
-
-impl CrudableAxum for Model {
-    type PkeyDe = TodoIdHelper;
-}
-
-impl PostgresCrudableTable for Entity {
-    fn get_pkey_filter(
-        keys: &[<Self::Model as Crudable>::Pkey],
-    ) -> impl sea_orm::sea_query::IntoCondition {
-        Expr::tuple([Expr::column(Column::Id1), Expr::column(Column::Id2)]).is_in(
-            keys.iter()
-                .map(|ids| Expr::tuple([Expr::value(ids.0), Expr::value(ids.1)])),
-        )
-    }
-
-    fn get_pkey_columns() -> Vec<Self::Column> {
-        vec![Column::Id1, Column::Id2]
     }
 }

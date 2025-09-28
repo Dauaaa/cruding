@@ -28,6 +28,7 @@ pub mod tags_counter {
     use sea_orm::{DeriveEntityModel, prelude::*};
     use serde::{Deserialize, Serialize};
 
+    #[cruding_macros::crudable_seaorm]
     #[derive(Debug, Clone, Serialize, Deserialize, DeriveEntityModel)]
     #[sea_orm(table_name = "tags_counter")]
     pub struct Model {
@@ -35,6 +36,7 @@ pub mod tags_counter {
         tag: String,
         total: i64,
         creation_time: DateTime<Utc>,
+        #[crudable(mono)]
         update_time: DateTime<Utc>,
     }
 
@@ -66,58 +68,6 @@ pub mod tags_counter {
         pub fn set_count(&mut self, new_count: i64, now: DateTime<Utc>) {
             self.total = new_count;
             self.update_time = now;
-        }
-    }
-
-    // start of cruding stuff
-
-    // Need to implement this for cruding stuff, rust should provide this implementation as a code
-    // action
-    impl PartialEq for Column {
-        fn eq(&self, other: &Self) -> bool {
-            core::mem::discriminant(self) == core::mem::discriminant(other)
-        }
-    }
-
-    impl Crudable for Model {
-        // This model has a composite primary key. It's important that the order is maintained!
-        type Pkey = String;
-        type MonoField = DateTime<Utc>;
-
-        fn pkey(&self) -> Self::Pkey {
-            self.tag.clone()
-        }
-
-        fn mono_field(&self) -> Self::MonoField {
-            self.update_time
-        }
-    }
-
-    /// Helper to make queries about todo
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct TagIdHelper {
-        tag: String,
-    }
-
-    impl From<TagIdHelper> for String {
-        fn from(value: TagIdHelper) -> Self {
-            value.tag
-        }
-    }
-
-    impl CrudableAxum for Model {
-        type PkeyDe = TagIdHelper;
-    }
-
-    impl PostgresCrudableTable for Entity {
-        fn get_pkey_filter(
-            keys: &[<Self::Model as Crudable>::Pkey],
-        ) -> impl sea_orm::sea_query::IntoCondition {
-            Column::Tag.is_in(keys)
-        }
-
-        fn get_pkey_columns() -> Vec<Self::Column> {
-            vec![Column::Tag]
         }
     }
 }
