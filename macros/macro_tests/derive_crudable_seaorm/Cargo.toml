@@ -1,0 +1,13 @@
+[package]
+name = "derive_crudable_seaorm_test"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+cruding_macros = { workspace = true }
+cruding = { workspace = true }
+sea-orm = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
