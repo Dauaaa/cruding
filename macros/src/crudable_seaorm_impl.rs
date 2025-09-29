@@ -17,6 +17,7 @@ pub fn crudable_seaorm_impl(
         pkeys: vec![],
         impl_axum: false,
         mono_field: None,
+        no_mono: false,
     };
 
     parse_from_metas(attrs, |meta| parse_macro_opts(meta, &mut config))?;
@@ -62,11 +63,13 @@ pub fn crudable_seaorm_impl(
             "No primary key fields detected (need #[sea_orm(primary_key)])",
         ));
     }
-    let (mono_ident, mono_ty) = config
-        .mono_field
-        .as_ref()
-        .ok_or_else(|| Error::new_spanned(&input.ident, "Missing #[crudable(mono)] on a field"))
-        .clone()?;
+
+    if config.mono_field.is_none() && !config.no_mono {
+        return Err(Error::new_spanned(
+            &input.ident,
+            "Missing #[crudable(mono)] on a field",
+        ));
+    }
 
     // Build Pkey type + expr preserving order of PK fields as declared.
     let pkey_type_tokens = build_pkey_types(&config);
@@ -94,18 +97,31 @@ pub fn crudable_seaorm_impl(
             .map(|(ident, _)| ident)
             .map(|id| quote! { self. #id .clone() });
 
+        let mono_impl = if let Some((mono_ident, mono_ty)) = &config.mono_field {
+            quote! {
+                type MonoField = #mono_ty;
+
+                fn mono_field(&self) -> Self::MonoField {
+                    self.#mono_ident .clone()
+                }
+            }
+        } else {
+            quote! {
+                type MonoField = ();
+
+                fn mono_field(&self) { }
+            }
+        };
+
         quote! {
             impl ::cruding::Crudable for #struct_ident {
                 type Pkey = #pkey_type_tokens;
-                type MonoField = #mono_ty;
 
                 fn pkey(&self) -> Self::Pkey {
                     (#(#ids),*)
                 }
 
-                fn mono_field(&self) -> Self::MonoField {
-                    self.#mono_ident .clone()
-                }
+                #mono_impl
             }
         }
     };
@@ -159,6 +175,7 @@ struct Config {
     pkeys: Vec<(Ident, Type)>,
     impl_axum: bool,
     mono_field: Option<(Ident, Type)>,
+    no_mono: bool,
 }
 
 fn parse_struct_attrs(meta: Meta, config: &mut Config) {
@@ -197,7 +214,8 @@ fn parse_macro_opts(meta: Meta, config: &mut Config) -> Result<()> {
             let path = path.get_ident().map(|ident| ident.to_string());
             match path.as_deref() {
                 Some("axum") => config.impl_axum = true,
-                _ => return Err(Error::new_spanned(path, "Supported opts: axum")),
+                Some("no_mono") => config.no_mono = true,
+                _ => return Err(Error::new_spanned(path, "Supported opts: axum, no_mono")),
             }
         }
         _ => return Err(Error::new_spanned(meta, "Supported opts: axum")),

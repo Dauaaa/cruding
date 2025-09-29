@@ -40,3 +40,27 @@ mod todo {
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
     pub enum Relation {}
 }
+
+mod no_mono {
+    use cruding_macros::crudable_seaorm;
+    use sea_orm::{DeriveEntityModel, prelude::*};
+    use serde::{Deserialize, Serialize};
+
+    // normal sea_orm stuff
+    #[crudable_seaorm(axum, no_mono)]
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveEntityModel)]
+    #[sea_orm(table_name = "no_mono")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        #[serde(default)]
+        id_1: Uuid,
+        #[sea_orm(primary_key, auto_increment = false)]
+        #[serde(default)]
+        id_2: String,
+    }
+
+    impl ActiveModelBehavior for ActiveModel {}
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+}
