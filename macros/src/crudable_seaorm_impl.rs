@@ -117,7 +117,7 @@ pub fn crudable_seaorm_impl(
             .map(|(ident, _)| Ident::new(&pascal_case(&ident.to_string()), ident.span()));
         let columns_2 = columns.clone();
         let ids = if config.pkeys.len() == 1 {
-            vec![quote! { Expr::value(ids) }]
+            vec![quote! { Expr::value(ids .clone()) }]
         } else {
             (0..config.pkeys.len())
                 .map(Index::from)
