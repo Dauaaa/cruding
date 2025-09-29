@@ -556,7 +556,7 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "cruding"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "cruding_axum_api",
  "cruding_core",
@@ -566,7 +566,7 @@ dependencies = [
 
 [[package]]
 name = "cruding_axum_api"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "cruding_core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -604,7 +604,7 @@ dependencies = [
 
 [[package]]
 name = "cruding_macros"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "proc-macro2",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "cruding_pg_source"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "cruding_qs_list_filter"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "cruding_core",
  "nom",

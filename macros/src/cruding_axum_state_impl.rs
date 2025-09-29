@@ -217,7 +217,7 @@ fn build_handler_impls(
         };
 
         Some(quote! {
-            impl ::cruding::axum_api::state::CrudableAxumStateListExt<#crudable> for AppState {
+            impl ::cruding::axum_api::state::CrudableAxumStateListExt<#crudable> for #state_ident {
                 type Column = #column;
             }
 

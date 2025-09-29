@@ -1,6 +1,6 @@
 [package]
 name = "cruding_qs_list_filter"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 
 description = "list filter parser implementation for the auto listing feature of cruding crate"
