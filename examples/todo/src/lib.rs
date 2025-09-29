@@ -9,15 +9,12 @@ use axum::{
 use chrono::Utc;
 use cruding::{
     Crudable, UpdateComparingParams,
-    axum_api::{
-        router::CrudRouter,
-        state::{CrudableAxumState, CrudableAxumStateListExt},
-    },
-    handler::{CrudableHandlerGetter, CrudableHandlerGetterListExt, CrudableHandlerImpl},
+    axum_api::router::CrudRouter,
+    handler::CrudableHandlerImpl,
     hook::make_crudable_hook,
     moka,
     pg_source::{
-        CrudablePostgresSource, PostgresCrudableConnection, PostgresCrudableConnectionInner,
+        CrudablePostgresSource, PostgresCrudableConnection,
     },
 };
 use sea_orm::DatabaseConnection;
@@ -83,135 +80,34 @@ pub type TagsHandler = CrudableHandlerImpl<
     tags::Column,
 >;
 
+#[cruding_macros::cruding_axum_state(
+    source_handle = PostgresCrudableConnection,
+    axum_ctx = AxumCtx,
+    inner_ctx = AppCtx,
+    error = ApiError,
+    inner_ctx_method_name = inner_ctx_impl,
+    new_source_handle_method_name = new_source_handle_impl,
+    listing = true,
+)]
 #[derive(Clone)]
 pub struct AppState {
+    #[crudable_handler(crud_name = "/todo", crudable = todo::Model, column = todo::Column)]
     pub todo_handler: Arc<TodoHandler>,
+    #[crudable_handler(crud_name = "/tags", crudable = tags::Model, column = tags::Column)]
     pub tags_handler: Arc<TagsHandler>,
     pub tags_counter_handler: Arc<TagsCounterHandler>,
     pub tags_repo: Arc<dyn TagsRepo + Send + Sync>,
     pub db_conn: DatabaseConnection,
 }
 
-impl CrudableHandlerGetter<todo::Model, FullCtx, PostgresCrudableConnection, ApiError>
-    for AppState
-{
-    fn handler(
-        &self,
-    ) -> &dyn cruding::handler::CrudableHandler<
-        todo::Model,
-        FullCtx,
-        PostgresCrudableConnection,
-        ApiError,
-    > {
-        self.todo_handler.as_ref()
-    }
-}
-
-impl
-    CrudableHandlerGetterListExt<
-        todo::Model,
-        FullCtx,
-        PostgresCrudableConnection,
-        ApiError,
-        todo::Column,
-    > for AppState
-{
-    fn handler_list(
-        &self,
-    ) -> &dyn cruding::handler::CrudableHandlerListExt<
-        todo::Model,
-        FullCtx,
-        PostgresCrudableConnection,
-        ApiError,
-        todo::Column,
-    > {
-        self.todo_handler.as_ref()
-    }
-}
-
-impl CrudableHandlerGetter<tags::Model, FullCtx, PostgresCrudableConnection, ApiError>
-    for AppState
-{
-    fn handler(
-        &self,
-    ) -> &dyn cruding::handler::CrudableHandler<
-        tags::Model,
-        FullCtx,
-        PostgresCrudableConnection,
-        ApiError,
-    > {
-        self.tags_handler.as_ref()
-    }
-}
-
-impl
-    CrudableHandlerGetterListExt<
-        tags::Model,
-        FullCtx,
-        PostgresCrudableConnection,
-        ApiError,
-        tags::Column,
-    > for AppState
-{
-    fn handler_list(
-        &self,
-    ) -> &dyn cruding::handler::CrudableHandlerListExt<
-        tags::Model,
-        FullCtx,
-        PostgresCrudableConnection,
-        ApiError,
-        tags::Column,
-    > {
-        self.tags_handler.as_ref()
-    }
-}
-
-impl CrudableAxumState<todo::Model> for AppState {
-    type AxumCtx = AxumCtx;
-    type InnerCtx = AppCtx;
-    type SourceHandle = PostgresCrudableConnection;
-    type Error = ApiError;
-
-    // this will be used like Router::new().nest(CRUD_NAME, ...)
-    const CRUD_NAME: &'static str = "/todo";
-
-    fn new_source_handle(&self) -> Self::SourceHandle {
-        PostgresCrudableConnection::new(PostgresCrudableConnectionInner::Connection(
-            self.db_conn.clone(),
-        ))
+impl AppState {
+    fn new_source_handle_impl(&self) -> PostgresCrudableConnection {
+        PostgresCrudableConnection::new_from_conn(self.db_conn.clone())
     }
 
-    fn inner_ctx(&self) -> Self::InnerCtx {
+    fn inner_ctx_impl(&self) -> AppCtx {
         self.clone()
     }
-}
-
-impl CrudableAxumStateListExt<todo::Model> for AppState {
-    type Column = todo::Column;
-}
-
-impl CrudableAxumState<tags::Model> for AppState {
-    type AxumCtx = AxumCtx;
-    type InnerCtx = AppCtx;
-    type SourceHandle = PostgresCrudableConnection;
-    type Error = ApiError;
-
-    // this will be used like Router::new().nest(CRUD_NAME, ...)
-    const CRUD_NAME: &'static str = "/tags";
-
-    fn new_source_handle(&self) -> Self::SourceHandle {
-        PostgresCrudableConnection::new(PostgresCrudableConnectionInner::Connection(
-            self.db_conn.clone(),
-        ))
-    }
-
-    fn inner_ctx(&self) -> Self::InnerCtx {
-        self.clone()
-    }
-}
-
-impl CrudableAxumStateListExt<tags::Model> for AppState {
-    type Column = tags::Column;
 }
 
 /// Adds the necessary hooks to the todo handler

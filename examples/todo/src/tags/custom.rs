@@ -24,7 +24,6 @@ use super::*;
 // tags_counter is an internal table but would still be good being setup as a crudable trait
 pub mod tags_counter {
     use chrono::{DateTime, Utc};
-    use cruding::{Crudable, axum_api::types::CrudableAxum, pg_source::PostgresCrudableTable};
     use sea_orm::{DeriveEntityModel, prelude::*};
     use serde::{Deserialize, Serialize};
 
