@@ -13,9 +13,7 @@ use cruding::{
     handler::CrudableHandlerImpl,
     hook::make_crudable_hook,
     moka,
-    pg_source::{
-        CrudablePostgresSource, PostgresCrudableConnection,
-    },
+    pg_source::{CrudablePostgresSource, PostgresCrudableConnection},
 };
 use sea_orm::DatabaseConnection;
 
