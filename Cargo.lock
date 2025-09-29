@@ -768,6 +768,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive_cruding_axum_state_test"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "cruding",
+ "cruding_macros",
+ "sea-orm",
+ "serde",
+]
+
+[[package]]
 name = "deunicode"
 version = "1.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

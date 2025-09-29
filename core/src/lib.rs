@@ -76,6 +76,9 @@ pub struct UpdateComparingParams<CRUD: Crudable> {
     pub update_payload: Vec<CRUD>,
 }
 
+pub type MokaFutureCrudableMap<CRUD> =
+    moka::future::Cache<<CRUD as Crudable>::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>;
+
 #[async_trait]
 impl<CRUD: Crudable> CrudableMap<CRUD>
     for moka::future::Cache<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>

@@ -75,6 +75,14 @@ impl PostgresCrudableConnection {
         }
     }
 
+    pub fn new_from_conn(conn: DatabaseConnection) -> Self {
+        Self {
+            conn: Arc::new(RwLock::new(PostgresCrudableConnectionInner::Connection(
+                conn,
+            ))),
+        }
+    }
+
     pub fn get_conn(&self) -> &RwLock<PostgresCrudableConnectionInner> {
         self.conn.as_ref()
     }

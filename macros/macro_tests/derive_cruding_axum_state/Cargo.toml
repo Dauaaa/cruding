@@ -1,0 +1,14 @@
+[package]
+name = "derive_cruding_axum_state_test"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+cruding_macros = { workspace = true }
+cruding = { workspace = true }
+sea-orm = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+axum = { workspace = true }

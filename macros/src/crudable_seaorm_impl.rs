@@ -36,7 +36,8 @@ pub fn crudable_seaorm_impl(
 
     for attr in struct_level_attrs.iter() {
         parse_from_attr(attr.clone(), |meta| {
-            Ok(parse_struct_attrs(meta, &mut config))
+            parse_struct_attrs(meta, &mut config);
+            Ok(())
         })?;
     }
     struct_level_attrs.retain(|attr| {
@@ -194,7 +195,7 @@ fn parse_macro_opts(meta: Meta, config: &mut Config) -> Result<()> {
     match meta {
         Meta::Path(path) => {
             let path = path.get_ident().map(|ident| ident.to_string());
-            match path.as_ref().map(String::as_str) {
+            match path.as_deref() {
                 Some("axum") => config.impl_axum = true,
                 _ => return Err(Error::new_spanned(path, "Supported opts: axum")),
             }
