@@ -1,4 +1,5 @@
 pub use cruding_core::*;
+pub use cruding_macros::*;
 
 pub mod pg_source {
     pub use cruding_pg_source::*;

@@ -1,6 +1,6 @@
 [package]
 name = "cruding"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 
 description = "crate for declaring generic CRUD apis"
@@ -15,3 +15,4 @@ categories = []
 cruding_axum_api = { workspace = true }
 cruding_pg_source = { workspace = true }
 cruding_core = { workspace = true }
+cruding_macros = { workspace = true }

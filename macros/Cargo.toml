@@ -1,7 +1,8 @@
 [package]
 name = "cruding_macros"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
+description = "macros for the cruding crate"
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
