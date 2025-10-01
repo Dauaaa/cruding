@@ -558,24 +558,18 @@ where
     }
 
     async fn persist_to_map(&self, input: Vec<CRUD>) -> Vec<Arc<CRUD>> {
-        let mut res = Vec::with_capacity(input.len());
-
-        for item in input {
-            res.push(self.map.insert(item).await);
-        }
-
-        res
+        self.map.insert(input).await
     }
 
     async fn get_from_map(&self, keys: &[CRUD::Pkey]) -> (Vec<MaybeArc<CRUD>>, Vec<CRUD::Pkey>) {
-        let mut res_hit = Vec::with_capacity(keys.len());
-        let mut res_miss = Vec::with_capacity(keys.len());
+        let cached_items = self.map.get(keys).await;
+        let mut res_hit = Vec::new();
+        let mut res_miss = Vec::new();
 
-        for key in keys {
-            if let Some(item) = self.map.get(key).await {
-                res_hit.push(MaybeArc::Arced(item));
-            } else {
-                res_miss.push(key.clone());
+        for (key, cached_item) in keys.iter().zip(cached_items.iter()) {
+            match cached_item {
+                Some(item) => res_hit.push(MaybeArc::Arced(item.clone())),
+                None => res_miss.push(key.clone()),
             }
         }
 
@@ -583,9 +577,7 @@ where
     }
 
     async fn invalidate_from_map(&self, keys: &[CRUD::Pkey]) {
-        for key in keys {
-            self.map.invalidate(key).await;
-        }
+        self.map.invalidate(keys).await;
     }
 }
 
