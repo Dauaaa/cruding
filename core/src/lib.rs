@@ -23,8 +23,8 @@ pub trait Crudable: Clone + Send + Sync + 'static {
 
 #[async_trait]
 pub trait CrudableMap<CRUD: Crudable>: Clone + Send + Sync + 'static {
-    /// Updates the cache but only does that if item's mono is greater. This will still return
-    /// Arc<item> even if it lost to the current inserted entry.
+    /// Updates the cache but only does that if item's mono is greater. 
+    /// This will still return Arc<item> even if it lost to the current inserted entry.
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>>;
     async fn invalidate(&self, keys: &[CRUD::Pkey]);
     async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>>;
