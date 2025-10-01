@@ -495,12 +495,12 @@ where
         input = self.source.update(input, source_handle.clone()).await?;
 
         if self.source.should_use_cache(source_handle.clone()).await {
-            Ok(self
-                .persist_to_map(input)
-                .await
-                .into_iter()
-                .map(MaybeArc::Arced)
-                .collect())
+            // Invalidate cache instead of updating it
+            let keys: Vec<CRUD::Pkey> = input.iter().map(|item| item.pkey()).collect();
+            self.invalidate_from_map(&keys).await;
+            
+            // Return items as Owned (not cached)
+            Ok(input.into_iter().map(MaybeArc::Owned).collect())
         } else {
             Ok(input.into_iter().map(MaybeArc::Owned).collect())
         }
