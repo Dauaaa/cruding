@@ -495,7 +495,7 @@ where
         input = self.source.update(input, source_handle.clone()).await?;
 
         if self.source.should_use_cache(source_handle.clone()).await {
-            // Invalidate cache instead of updating it
+            // Invalidate cache instead of updating it,only reading from the source should generate new entries in the cache
             let keys: Vec<CRUD::Pkey> = input.iter().map(|item| item.pkey()).collect();
             self.invalidate_from_map(&keys).await;
             
@@ -566,6 +566,7 @@ where
         let mut res_hit = Vec::new();
         let mut res_miss = Vec::new();
 
+        // Zip is guaranteed to be aligned because the order of items in cached_items is same as the corresponding primary keys in keys.
         for (key, cached_item) in keys.iter().zip(cached_items.iter()) {
             match cached_item {
                 Some(item) => res_hit.push(MaybeArc::Arced(item.clone())),

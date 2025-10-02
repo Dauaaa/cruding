@@ -541,7 +541,7 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
     // With invalidation behavior, concurrent updates will race and the final
     // value will be whichever update completes last, not necessarily the max.
     // This test now verifies that concurrent updates work without crashing.
-    let max_ver: i64 = 20; // Reduce from 200 to make test faster
+    let max_ver: i64 = 200;
     let mut versions: Vec<i64> = (1..=max_ver).collect();
     versions.shuffle(&mut rng());
 
@@ -565,6 +565,33 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
         })
     });
 
+    // Concurrent readers: verify observed mono never goes backwards
+    let _readers = (0..4).map(|_| {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            let mut last = 0i64;
+            for _ in 0..1000 {
+                let ctx = TestCtx;
+                let h = Handle;
+                let got = handler.read(vec![7], ctx, h).await.unwrap();
+                if let Some(MaybeArc::Arced(v)) = got.into_iter().next() {
+                    // Should never regress due to ArcSwap::rcu monotonic replace
+                    assert!(
+                        v.mono >= last,
+                        "monotonicity violated: saw {} after {}",
+                        v.mono,
+                        last
+                    );
+                    last = v.mono;
+                } else {
+                    panic!("expected Arced value for id=7");
+                }
+                // Tiny yield to mix with writers
+                tokio::task::yield_now().await;
+            }
+        })
+    });
+
     // Run all writer tasks
     for t in writers {
         t.await.unwrap();
@@ -573,24 +600,21 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
     // Allow any in-flight operations to settle
     sleep(Duration::from_millis(10)).await;
 
-    // Final state should be some valid update that completed
-    // (not necessarily the max, since database doesn't enforce monotonicity)
+    // Final state must be the max version
     let ctx = TestCtx;
     let h = Handle;
     let final_read = handler.read(vec![7], ctx, h).await.unwrap();
     let final_item = match &final_read[0] {
         MaybeArc::Arced(v) => v.clone(),
-        MaybeArc::Owned(v) => Arc::new(v.clone()),
+        _ => panic!("expected Arced"),
     };
 
-    // Verify the final value is one of the values we attempted to write
-    assert!(
-        final_item.mono >= 1 && final_item.mono <= max_ver,
-        "final mono should be one of the submitted values, got {}",
-        final_item.mono
+    assert_eq!(
+        final_item.mono, max_ver,
+        "final cached mono should be the maximum submitted"
     );
     assert_eq!(
-        final_item.val, final_item.mono as i32,
-        "final value should match the mono field"
+        final_item.val, max_ver as i32,
+        "final cached value should match the max version payload"
     );
 }

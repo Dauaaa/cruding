@@ -27,6 +27,8 @@ pub trait CrudableMap<CRUD: Crudable>: Clone + Send + Sync + 'static {
     /// This will still return Arc<item> even if it lost to the current inserted entry.
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>>;
     async fn invalidate(&self, keys: &[CRUD::Pkey]);
+    /// The order of elements found will be the same as the corresponding keys provided as input.
+    /// And if the key didn't exist in the db, corresponding value in the vec will be None.
     async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>>;
 }
 
