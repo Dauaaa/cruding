@@ -23,7 +23,7 @@ pub trait Crudable: Clone + Send + Sync + 'static {
 
 #[async_trait]
 pub trait CrudableMap<CRUD: Crudable>: Clone + Send + Sync + 'static {
-    /// Updates the cache but only does that if item's mono is greater. 
+    /// Updates the cache but only does that if item's mono is greater.
     /// This will still return Arc<item> even if it lost to the current inserted entry.
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>>;
     async fn invalidate(&self, keys: &[CRUD::Pkey]);
@@ -86,7 +86,7 @@ impl<CRUD: Crudable> CrudableMap<CRUD>
 {
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
         let mut results = Vec::with_capacity(items.len());
-        
+
         for item in items {
             let new_item = Arc::new(item);
             let key = new_item.pkey();
@@ -107,7 +107,7 @@ impl<CRUD: Crudable> CrudableMap<CRUD>
 
             results.push(new_item);
         }
-        
+
         results
     }
 
@@ -120,14 +120,15 @@ impl<CRUD: Crudable> CrudableMap<CRUD>
 
     async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>> {
         let mut results = Vec::with_capacity(keys.len());
-        
+
         for key in keys {
-            let item = moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::get(self, key)
-                .await
-                .map(|x| x.load_full());
+            let item =
+                moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::get(self, key)
+                    .await
+                    .map(|x| x.load_full());
             results.push(item);
         }
-        
+
         results
     }
 }

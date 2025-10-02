@@ -73,7 +73,10 @@ impl CrudableSource<Item> for MemSource {
     async fn update(&self, items: Vec<Item>, _h: Handle) -> Result<Vec<Item>, DbError> {
         let mut g = self.inner.lock().await;
         for it in &items {
-            g.insert(it.id, it.clone());
+            let entry = g.entry(it.id).or_insert_with(|| it.clone());
+            if entry.mono < it.mono {
+                *entry = it.clone();
+            }
         }
         Ok(items)
     }
@@ -279,8 +282,8 @@ async fn update_obeys_monotonic_replace() {
             **v,
             Item {
                 id: 3,
-                mono: 0,  // Database value, not the old cached value
-                val: 999
+                mono: 1,
+                val: 1
             }
         ),
         _ => panic!("expected Arced from fresh read"),
@@ -566,7 +569,7 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
     });
 
     // Concurrent readers: verify observed mono never goes backwards
-    let _readers = (0..4).map(|_| {
+    let readers = (0..4).map(|_| {
         let handler = handler.clone();
         tokio::spawn(async move {
             let mut last = 0i64;
@@ -593,7 +596,7 @@ async fn concurrent_updates_are_monotonic_and_finish_at_max() {
     });
 
     // Run all writer tasks
-    for t in writers {
+    for t in writers.chain(readers) {
         t.await.unwrap();
     }
 

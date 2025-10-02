@@ -420,6 +420,7 @@ where
         let mut items = if self.source.should_use_cache(source_handle.clone()).await {
             let (mut items, missed_keys) = self.get_from_map(&input).await;
 
+            // Inserting to cache, this takes care of invalidated cache entries.
             items.extend(
                 self.persist_to_map(
                     self.source
@@ -495,11 +496,10 @@ where
         input = self.source.update(input, source_handle.clone()).await?;
 
         if self.source.should_use_cache(source_handle.clone()).await {
-            // Invalidate cache instead of updating it,only reading from the source should generate new entries in the cache
+            // Invalidate cache instead of updating it, only reading from the source should generate new entries in the cache
             let keys: Vec<CRUD::Pkey> = input.iter().map(|item| item.pkey()).collect();
             self.invalidate_from_map(&keys).await;
-            
-            // Return items as Owned (not cached)
+
             Ok(input.into_iter().map(MaybeArc::Owned).collect())
         } else {
             Ok(input.into_iter().map(MaybeArc::Owned).collect())
