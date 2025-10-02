@@ -420,6 +420,7 @@ where
         let mut items = if self.source.should_use_cache(source_handle.clone()).await {
             let (mut items, missed_keys) = self.get_from_map(&input).await;
 
+            // Inserting to cache, this takes care of invalidated cache entries.
             items.extend(
                 self.persist_to_map(
                     self.source
@@ -495,12 +496,11 @@ where
         input = self.source.update(input, source_handle.clone()).await?;
 
         if self.source.should_use_cache(source_handle.clone()).await {
-            Ok(self
-                .persist_to_map(input)
-                .await
-                .into_iter()
-                .map(MaybeArc::Arced)
-                .collect())
+            // Invalidate cache instead of updating it, only reading from the source should generate new entries in the cache
+            let keys: Vec<CRUD::Pkey> = input.iter().map(|item| item.pkey()).collect();
+            self.invalidate_from_map(&keys).await;
+
+            Ok(input.into_iter().map(MaybeArc::Owned).collect())
         } else {
             Ok(input.into_iter().map(MaybeArc::Owned).collect())
         }
@@ -558,24 +558,19 @@ where
     }
 
     async fn persist_to_map(&self, input: Vec<CRUD>) -> Vec<Arc<CRUD>> {
-        let mut res = Vec::with_capacity(input.len());
-
-        for item in input {
-            res.push(self.map.insert(item).await);
-        }
-
-        res
+        self.map.insert(input).await
     }
 
     async fn get_from_map(&self, keys: &[CRUD::Pkey]) -> (Vec<MaybeArc<CRUD>>, Vec<CRUD::Pkey>) {
-        let mut res_hit = Vec::with_capacity(keys.len());
-        let mut res_miss = Vec::with_capacity(keys.len());
+        let cached_items = self.map.get(keys).await;
+        let mut res_hit = Vec::new();
+        let mut res_miss = Vec::new();
 
-        for key in keys {
-            if let Some(item) = self.map.get(key).await {
-                res_hit.push(MaybeArc::Arced(item));
-            } else {
-                res_miss.push(key.clone());
+        // Zip is guaranteed to be aligned because the order of items in cached_items is same as the corresponding primary keys in keys.
+        for (key, cached_item) in keys.iter().zip(cached_items.iter()) {
+            match cached_item {
+                Some(item) => res_hit.push(MaybeArc::Arced(item.clone())),
+                None => res_miss.push(key.clone()),
             }
         }
 
@@ -583,9 +578,7 @@ where
     }
 
     async fn invalidate_from_map(&self, keys: &[CRUD::Pkey]) {
-        for key in keys {
-            self.map.invalidate(key).await;
-        }
+        self.map.invalidate(keys).await;
     }
 }
 

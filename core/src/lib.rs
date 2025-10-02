@@ -23,12 +23,13 @@ pub trait Crudable: Clone + Send + Sync + 'static {
 
 #[async_trait]
 pub trait CrudableMap<CRUD: Crudable>: Clone + Send + Sync + 'static {
-    /// Updates the cache but only does that if item's mono is greater. This will still return
-    /// Arc<item> even if it lost to the current inserted entry.
-    async fn insert(&self, item: CRUD) -> Arc<CRUD>;
-    async fn invalidate(&self, key: &CRUD::Pkey);
-    async fn get(&self, key: &CRUD::Pkey) -> Option<Arc<CRUD>>;
-    async fn contains_key(&self, key: &CRUD::Pkey) -> bool;
+    /// Updates the cache but only does that if item's mono is greater.
+    /// This will still return Arc<item> even if it lost to the current inserted entry.
+    async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>>;
+    async fn invalidate(&self, keys: &[CRUD::Pkey]);
+    /// The order of elements found will be the same as the corresponding keys provided as input.
+    /// And if the key didn't exist in the db, corresponding value in the vec will be None.
+    async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>>;
 }
 
 #[async_trait]
@@ -83,39 +84,51 @@ pub type MokaFutureCrudableMap<CRUD> =
 impl<CRUD: Crudable> CrudableMap<CRUD>
     for moka::future::Cache<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>
 {
-    async fn insert(&self, item: CRUD) -> Arc<CRUD> {
-        let new_item = Arc::new(item);
-        let key = new_item.pkey();
+    async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
+        let mut results = Vec::with_capacity(items.len());
 
-        // Guarantee that new_item is latest or not included in cache
-        let entry =
-            moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::entry(self, key)
-                .or_insert_with(async { Arc::new(arc_swap::ArcSwap::new(new_item.clone())) })
+        for item in items {
+            let new_item = Arc::new(item);
+            let key = new_item.pkey();
+
+            // Guarantee that new_item is latest or not included in cache
+            let entry =
+                moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::entry(self, key)
+                    .or_insert_with(async { Arc::new(arc_swap::ArcSwap::new(new_item.clone())) })
+                    .await;
+
+            entry.value().rcu(|cur| {
+                if cur.mono_field() < new_item.mono_field() {
+                    new_item.clone()
+                } else {
+                    cur.clone()
+                }
+            });
+
+            results.push(new_item);
+        }
+
+        results
+    }
+
+    async fn invalidate(&self, keys: &[CRUD::Pkey]) {
+        for key in keys {
+            moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::invalidate(self, key)
                 .await;
-
-        entry.value().rcu(|cur| {
-            if cur.mono_field() < new_item.mono_field() {
-                new_item.clone()
-            } else {
-                cur.clone()
-            }
-        });
-
-        new_item
+        }
     }
 
-    async fn invalidate(&self, key: &CRUD::Pkey) {
-        moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::invalidate(self, key)
-            .await;
-    }
+    async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>> {
+        let mut results = Vec::with_capacity(keys.len());
 
-    async fn get(&self, key: &CRUD::Pkey) -> Option<Arc<CRUD>> {
-        moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::get(self, key)
-            .await
-            .map(|x| x.load_full())
-    }
+        for key in keys {
+            let item =
+                moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::get(self, key)
+                    .await
+                    .map(|x| x.load_full());
+            results.push(item);
+        }
 
-    async fn contains_key(&self, key: &CRUD::Pkey) -> bool {
-        moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::contains_key(self, key)
+        results
     }
 }
