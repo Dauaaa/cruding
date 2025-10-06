@@ -72,7 +72,6 @@ where
             Ok(conn) => conn,
             Err(e) => {
                 tracing::error!("Failed to get Redis connection: {}", e);
-                // Return the items as-is if Redis is unavailable
                 return items.into_iter().map(Arc::new).collect();
             }
         };
