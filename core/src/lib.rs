@@ -7,6 +7,7 @@ pub mod hook;
 pub mod list;
 pub mod redis_cache;
 
+
 use async_trait::async_trait;
 use std::{hash::Hash, sync::Arc};
 
@@ -137,136 +138,97 @@ where
     CRUD::MonoField: serde::Serialize + for<'de> serde::Deserialize<'de>,
 {
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
-        // Always insert into Redis first
-        let redis_results = CrudableMap::insert(&self.redis, items.clone()).await;
-
-        // If Moka is enabled, also insert there (with proper monotonic logic)
+        // If Moka is enabled, use the original Moka implementation
         if self.use_moka {
             if let Some(moka) = &self.moka {
-                let moka_clone = moka.clone();
-                let items_clone = items.clone();
-                
+                // Call the original Moka insert implementation
+                let results = CrudableMap::insert(moka, items.clone()).await;
+
+                // Additionally insert into Redis in background
+                let redis_clone = self.redis.clone();
+                let items_clone = items;
                 tokio::spawn(async move {
-                    for item in items_clone {
-                        let new_item = Arc::new(item);
-                        let key = new_item.pkey();
-
-                        let entry = moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::entry(
-                            &moka_clone, key
-                        )
-                        .or_insert_with(async { Arc::new(arc_swap::ArcSwap::new(new_item.clone())) })
-                        .await;
-
-                        entry.value().rcu(|cur| {
-                            if cur.mono_field() < new_item.mono_field() {
-                                new_item.clone()
-                            } else {
-                                cur.clone()
-                            }
-                        });
-                    }
+                    let _ = CrudableMap::insert(&redis_clone, items_clone).await;
                 });
+
+                return results;
             }
         }
 
-        redis_results
+        // No Moka, just use Redis
+        CrudableMap::insert(&self.redis, items).await
     }
 
     async fn invalidate(&self, keys: &[CRUD::Pkey]) {
-        // Always invalidate Redis
-        CrudableMap::invalidate(&self.redis, keys).await;
-
-        // If Moka is enabled, invalidate there too
+        // If Moka is enabled, use the original Moka implementation
         if self.use_moka {
             if let Some(moka) = &self.moka {
-                let moka_clone = moka.clone();
+                // Call the original Moka invalidate implementation
+                CrudableMap::invalidate(moka, keys).await;
+
+                // Additionally invalidate Redis in background
+                let redis_clone = self.redis.clone();
                 let keys_clone = keys.to_vec();
-                
                 tokio::spawn(async move {
-                    for key in keys_clone {
-                        moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::invalidate(
-                            &moka_clone, &key
-                        )
-                        .await;
-                    }
+                    CrudableMap::invalidate(&redis_clone, &keys_clone).await;
                 });
+
+                return;
             }
         }
+
+        // No Moka, just use Redis
+        CrudableMap::invalidate(&self.redis, keys).await;
     }
 
     async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>> {
-        // If Moka is enabled, check it first (L1 cache)
+        // If Moka is enabled, use the original Moka implementation
         if self.use_moka {
             if let Some(moka) = &self.moka {
-                let mut moka_results = Vec::with_capacity(keys.len());
+                // Call the original Moka get implementation
+                let mut results = CrudableMap::get(moka, keys).await;
 
-                for key in keys {
-                    let item = moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::get(
-                        moka, key
-                    )
-                    .await
-                    .map(|x| x.load_full());
-                    moka_results.push(item);
-                }
-
-                // Find Moka misses
+                // Check for misses and fetch from Redis
                 let mut redis_keys_to_fetch = Vec::new();
                 let mut redis_indices = Vec::new();
 
-                for (i, result) in moka_results.iter().enumerate() {
+                for (i, result) in results.iter().enumerate() {
                     if result.is_none() {
                         redis_keys_to_fetch.push(keys[i].clone());
                         redis_indices.push(i);
                     }
                 }
 
-                // If there are misses, fetch from Redis (L2)
                 if !redis_keys_to_fetch.is_empty() {
                     let redis_results = CrudableMap::get(&self.redis, &redis_keys_to_fetch).await;
 
-                    // Backfill Moka with Redis hits
-                    let mut items_to_backfill = Vec::new();
+                    // Backfill Moka with items from Redis using original Moka insert
+                    let items_to_backfill: Vec<CRUD> = redis_results
+                        .iter()
+                        .filter_map(|opt| opt.as_ref().map(|arc| (**arc).clone()))
+                        .collect();
 
-                    for (redis_idx, &final_idx) in redis_indices.iter().enumerate() {
-                        if let Some(redis_result) = redis_results.get(redis_idx) {
-                            if let Some(item) = redis_result {
-                                moka_results[final_idx] = Some(item.clone());
-                                items_to_backfill.push((**item).clone());
-                            }
-                        }
-                    }
-
-                    // Backfill Moka asynchronously
                     if !items_to_backfill.is_empty() {
                         let moka_clone = moka.clone();
                         tokio::spawn(async move {
-                            for item in items_to_backfill {
-                                let new_item = Arc::new(item);
-                                let key = new_item.pkey();
-
-                                let entry = moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::entry(
-                                    &moka_clone, key
-                                )
-                                .or_insert_with(async { Arc::new(arc_swap::ArcSwap::new(new_item.clone())) })
-                                .await;
-
-                                entry.value().rcu(|cur| {
-                                    if cur.mono_field() < new_item.mono_field() {
-                                        new_item.clone()
-                                    } else {
-                                        cur.clone()
-                                    }
-                                });
-                            }
+                            // Call the original Moka insert implementation for backfilling
+                            let _ = CrudableMap::insert(&moka_clone, items_to_backfill).await;
                         });
+                    }
+
+                    // Update results with Redis data
+                    for (redis_idx, &final_idx) in redis_indices.iter().enumerate() {
+                        if let Some(redis_result) = redis_results.get(redis_idx) {
+                            results[final_idx] = redis_result.clone();
+                        }
                     }
                 }
 
-                return moka_results;
+                return results;
             }
         }
 
-        // No Moka, go directly to Redis
+        // No Moka, just use Redis
         CrudableMap::get(&self.redis, keys).await
     }
 }
