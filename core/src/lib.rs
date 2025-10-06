@@ -1,10 +1,69 @@
 //! Defines the core structure of the cruding crate. While the core is void of any details of
 //! postgres, redis etc. The core needs to be "aligned" with those systems. This is done by
 //! considering that every Crudable has a PRIMARY KEY.
+//!
+//! # Cache Backends
+//!
+//! This crate provides multiple caching backends:
+//!
+//! ## Moka Cache (In-Memory)
+//! - Fast, in-memory caching with LRU eviction
+//! - Configurable TTL and TTI
+//! - Single-instance only (not shared between processes)
+//!
+//! ## Redis Cache (Distributed)
+//! - Persistent, distributed caching
+//! - Shared between multiple instances
+//! - Network overhead but better for scaling
+//!
+//! ## Hybrid Cache (Moka + Redis)
+//! - Best of both worlds
+//! - Moka as L1 cache (fast), Redis as L2 cache (shared)
+//! - Automatic promotion/demotion between layers
+//!
+//! # Example Usage
+//!
+//! ```rust,no_run
+//! use cruding_core::{HybridCrudableMap, CacheConfig, MokaConfig, RedisConfig};
+//! 
+//! # #[derive(Clone, serde::Serialize, serde::Deserialize)]
+//! # struct MyEntity { id: u64, version: u64 }
+//! # impl cruding_core::Crudable for MyEntity {
+//! #     type Pkey = u64;
+//! #     type MonoField = u64;
+//! #     fn pkey(&self) -> u64 { self.id }
+//! #     fn mono_field(&self) -> u64 { self.version }
+//! # }
+//!
+//! # async fn example() {
+//! // Moka-only cache
+//! let moka_cache = HybridCrudableMap::<MyEntity>::moka_only(MokaConfig::default());
+//!
+//! // Redis-only cache  
+//! let redis_cache = HybridCrudableMap::<MyEntity>::redis_only(RedisConfig::default());
+//! if let Ok(cache) = redis_cache {
+//!     // Use the Redis cache
+//! }
+//!
+//! // Hybrid cache (both Moka and Redis)
+//! let hybrid_cache = HybridCrudableMap::<MyEntity>::both(
+//!     MokaConfig::default(),
+//!     RedisConfig::default(),
+//! );
+//! if let Ok(cache) = hybrid_cache {
+//!     // Use the hybrid cache
+//! }
+//! # }
+//! ```
 
 pub mod handler;
 pub mod hook;
 pub mod list;
+pub mod redis_cache;
+pub mod hybrid_cache;
+
+#[cfg(test)]
+mod hybrid_cache_tests;
 
 use async_trait::async_trait;
 use std::{hash::Hash, sync::Arc};
@@ -132,3 +191,7 @@ impl<CRUD: Crudable> CrudableMap<CRUD>
         results
     }
 }
+
+// Re-export redis and hybrid cache types for easy access
+pub use redis_cache::{RedisCrudableMap, RedisConfig};
+pub use hybrid_cache::{HybridCrudableMap, CacheConfig, MokaConfig};
