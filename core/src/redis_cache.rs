@@ -33,6 +33,7 @@ where
     CRUD::Pkey: ToRedisArgs + FromRedisValue + Debug,
     CRUD::MonoField: Serialize + for<'de> Deserialize<'de>,
 {
+    #[tracing::instrument(skip_all)]
     pub fn new(config: RedisConfig) -> Result<Self, redis::RedisError> {
         let client = Client::open(config.url)?;
         let key_prefix = config.key_prefix.unwrap_or_else(|| "cruding:".to_string());
@@ -64,6 +65,7 @@ where
     CRUD::Pkey: ToRedisArgs + FromRedisValue + Debug,
     CRUD::MonoField: Serialize + for<'de> Deserialize<'de>,
 {
+    #[tracing::instrument(skip_all)]
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
         let mut results = Vec::with_capacity(items.len());
         let mut conn = match self.get_connection().await {
@@ -124,6 +126,7 @@ where
         results
     }
 
+    #[tracing::instrument(skip_all)]
     async fn invalidate(&self, keys: &[CRUD::Pkey]) {
         let mut conn = match self.get_connection().await {
             Ok(conn) => conn,
@@ -150,6 +153,7 @@ where
         }
     }
 
+    #[tracing::instrument(skip_all)]
     async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>> {
         let mut results = Vec::with_capacity(keys.len());
         let mut conn = match self.get_connection().await {
