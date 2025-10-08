@@ -86,7 +86,6 @@ pub type MokaFutureCrudableMap<CRUD> =
 pub struct CrudableMapWithMoka<CRUD: Crudable> {
     redis: redis_cache::RedisCrudableMap<CRUD>,
     moka: Option<MokaFutureCrudableMap<CRUD>>,
-    use_moka: bool,
 }
 
 impl<CRUD> CrudableMapWithMoka<CRUD>
@@ -105,7 +104,6 @@ where
         Ok(Self {
             redis,
             moka,
-            use_moka,
         })
     }
 
@@ -113,7 +111,6 @@ where
         Ok(Self {
             redis: redis_cache::RedisCrudableMap::new(redis_config)?,
             moka: None,
-            use_moka: false,
         })
     }
 
@@ -124,7 +121,6 @@ where
         Ok(Self {
             redis: redis_cache::RedisCrudableMap::new(redis_config)?,
             moka: Some(moka),
-            use_moka: true,
         })
     }
 }
@@ -137,81 +133,78 @@ where
     CRUD::MonoField: serde::Serialize + for<'de> serde::Deserialize<'de>,
 {
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
-        if self.use_moka {
-            if let Some(moka) = &self.moka {
-                let results = CrudableMap::insert(moka, items.clone()).await;
 
-                let redis_clone = self.redis.clone();
-                let items_clone = items;
-                tokio::spawn(async move {
-                    let _ = CrudableMap::insert(&redis_clone, items_clone).await;
-                });
+        if let Some(moka) = &self.moka {
+            let results = CrudableMap::insert(moka, items.clone()).await;
 
-                return results;
-            }
+            let redis_clone = self.redis.clone();
+            let items_clone = items;
+            tokio::spawn(async move {
+                let _ = CrudableMap::insert(&redis_clone, items_clone).await;
+            });
+
+            return results;
         }
 
         CrudableMap::insert(&self.redis, items).await
     }
 
     async fn invalidate(&self, keys: &[CRUD::Pkey]) {
-        if self.use_moka {
-            if let Some(moka) = &self.moka {
-                CrudableMap::invalidate(moka, keys).await;
+        if let Some(moka) = &self.moka {
+            CrudableMap::invalidate(moka, keys).await;
 
-                let redis_clone = self.redis.clone();
-                let keys_clone = keys.to_vec();
-                tokio::spawn(async move {
-                    CrudableMap::invalidate(&redis_clone, &keys_clone).await;
-                });
+            let redis_clone = self.redis.clone();
+            let keys_clone = keys.to_vec();
+            tokio::spawn(async move {
+                CrudableMap::invalidate(&redis_clone, &keys_clone).await;
+            });
 
-                return;
-            }
+            return;
         }
 
         CrudableMap::invalidate(&self.redis, keys).await;
     }
 
     async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>> {
-        if self.use_moka {
-            if let Some(moka) = &self.moka {
-                let mut results = CrudableMap::get(moka, keys).await;
+        
+        if let Some(moka) = &self.moka {
+            let mut results = CrudableMap::get(moka, keys).await;
 
-                let mut redis_keys_to_fetch = Vec::new();
-                let mut redis_indices = Vec::new();
+            let mut redis_keys_to_fetch = Vec::new();
+            let mut redis_indices = Vec::new();
 
-                for (i, result) in results.iter().enumerate() {
-                    if result.is_none() {
-                        redis_keys_to_fetch.push(keys[i].clone());
-                        redis_indices.push(i);
-                    }
+            for (i, result) in results.iter().enumerate() {
+                if result.is_none() {
+                    redis_keys_to_fetch.push(keys[i].clone());
+                    redis_indices.push(i);
                 }
-
-                if !redis_keys_to_fetch.is_empty() {
-                    let redis_results = CrudableMap::get(&self.redis, &redis_keys_to_fetch).await;
-
-                    let items_to_backfill: Vec<CRUD> = redis_results
-                        .iter()
-                        .filter_map(|opt| opt.as_ref().map(|arc| (**arc).clone()))
-                        .collect();
-
-                    if !items_to_backfill.is_empty() {
-                        let moka_clone = moka.clone();
-                        tokio::spawn(async move {
-                            let _ = CrudableMap::insert(&moka_clone, items_to_backfill).await;
-                        });
-                    }
-
-                    for (redis_idx, &final_idx) in redis_indices.iter().enumerate() {
-                        if let Some(redis_result) = redis_results.get(redis_idx) {
-                            results[final_idx] = redis_result.clone();
-                        }
-                    }
-                }
-
-                return results;
             }
+
+            if !redis_keys_to_fetch.is_empty() {
+                let redis_results = CrudableMap::get(&self.redis, &redis_keys_to_fetch).await;
+
+                let items_to_backfill: Vec<CRUD> = redis_results
+                    .iter()
+                    .filter_map(|opt| opt.as_ref().map(|arc| (**arc).clone()))
+                    .collect();
+
+                if !items_to_backfill.is_empty() {
+                    let moka_clone = moka.clone();
+                    tokio::spawn(async move {
+                        let _ = CrudableMap::insert(&moka_clone, items_to_backfill).await;
+                    });
+                }
+
+                for (redis_idx, &final_idx) in redis_indices.iter().enumerate() {
+                    if let Some(redis_result) = redis_results.get(redis_idx) {
+                        results[final_idx] = redis_result.clone();
+                    }
+                }
+            }
+
+            return results;
         }
+        
 
         // No Moka, just use Redis
         CrudableMap::get(&self.redis, keys).await
