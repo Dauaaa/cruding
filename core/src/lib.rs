@@ -99,7 +99,6 @@ where
         moka: Option<MokaFutureCrudableMap<CRUD>>,
     ) -> Result<Self, redis::RedisError> {
         let redis = redis_cache::RedisCrudableMap::new(redis_config)?;
-        let use_moka = moka.is_some();
 
         Ok(Self {
             redis,
@@ -133,35 +132,16 @@ where
     CRUD::MonoField: serde::Serialize + for<'de> serde::Deserialize<'de>,
 {
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
-
         if let Some(moka) = &self.moka {
-            let results = CrudableMap::insert(moka, items.clone()).await;
-
-            let redis_clone = self.redis.clone();
-            let items_clone = items;
-            tokio::spawn(async move {
-                let _ = CrudableMap::insert(&redis_clone, items_clone).await;
-            });
-
-            return results;
+            CrudableMap::insert(moka, items.clone()).await;
         }
-
-        CrudableMap::insert(&self.redis, items).await
+        self.redis.insert(items).await
     }
 
     async fn invalidate(&self, keys: &[CRUD::Pkey]) {
         if let Some(moka) = &self.moka {
             CrudableMap::invalidate(moka, keys).await;
-
-            let redis_clone = self.redis.clone();
-            let keys_clone = keys.to_vec();
-            tokio::spawn(async move {
-                CrudableMap::invalidate(&redis_clone, &keys_clone).await;
-            });
-
-            return;
         }
-
         CrudableMap::invalidate(&self.redis, keys).await;
     }
 
@@ -173,6 +153,7 @@ where
             let mut redis_keys_to_fetch = Vec::new();
             let mut redis_indices = Vec::new();
 
+            // For the keys not found in moka, getting from redis.
             for (i, result) in results.iter().enumerate() {
                 if result.is_none() {
                     redis_keys_to_fetch.push(keys[i].clone());
@@ -205,7 +186,6 @@ where
             return results;
         }
         
-
         // No Moka, just use Redis
         CrudableMap::get(&self.redis, keys).await
     }

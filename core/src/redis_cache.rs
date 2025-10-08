@@ -9,6 +9,8 @@ use crate::{Crudable, CrudableMap};
 pub struct RedisCrudableMap<CRUD: Crudable> {
     client: Client,
     key_prefix: String,
+    /// When true, insert and invalidate are done asynchronously
+    dispatch_mutations: bool,
     _phantom: PhantomData<CRUD>,
 }
 
@@ -37,10 +39,12 @@ where
     pub fn new(config: RedisConfig) -> Result<Self, redis::RedisError> {
         let client = Client::open(config.url)?;
         let key_prefix = config.key_prefix.unwrap_or_else(|| "cruding:".to_string());
+        let dispatch_mutations = true;
 
         Ok(Self {
             client,
             key_prefix,
+            dispatch_mutations,
             _phantom: PhantomData,
         })
     }
