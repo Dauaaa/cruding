@@ -140,11 +140,15 @@ where
         self.redis.insert(items).await
     }
 
+    /// Invalidating redis first to avoid race condition.
+    /// Invalidating moka first could still lead to repopulating it with older entry when another process reads from redis and backfills.
+    /// Monotonicity doesn't protect here.
     async fn invalidate(&self, keys: &[CRUD::Pkey]) {
+        CrudableMap::invalidate(&self.redis, keys).await;
+
         if let Some(moka) = &self.moka {
             CrudableMap::invalidate(moka, keys).await;
         }
-        CrudableMap::invalidate(&self.redis, keys).await;
     }
 
     async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>> {
