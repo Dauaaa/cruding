@@ -60,6 +60,87 @@ where
     async fn get_connection(&self) -> Result<redis::aio::Connection, redis::RedisError> {
         self.client.get_async_connection().await
     }
+
+    async fn insert_sync(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
+        let mut conn = match self.get_connection().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::error!("Failed to get Redis connection: {}", e);
+                return items.into_iter().map(Arc::new).collect();
+            }
+        };
+
+        let mut results = Vec::with_capacity(items.len());
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+
+        let mono_keys: Vec<String> = items.iter()
+            .map(|item| self.make_mono_key(&item.pkey()))
+            .collect();
+
+        let existing_monos: Vec<Option<String>> = match conn.get(&mono_keys).await {
+            Ok(values) => values,
+            Err(e) => {
+                tracing::error!("Failed to get existing mono fields: {}", e);
+                vec![None; items.len()]
+            }
+        };
+
+        for (item, existing_mono) in items.into_iter().zip(existing_monos.iter()) {
+            let new_item = Arc::new(item);
+            let should_update = match existing_mono {
+                Some(mono_json) => {
+                    match serde_json::from_str::<CRUD::MonoField>(mono_json) {
+                        Ok(existing) => new_item.mono_field() > existing,
+                        Err(_) => true,
+                    }
+                }
+                None => true,
+            };
+
+            if should_update {
+                if let (Ok(item_json), Ok(mono_json)) = (
+                    serde_json::to_string(&*new_item),
+                    serde_json::to_string(&new_item.mono_field()),
+                ) {
+                    let data_key = self.make_key(&new_item.pkey());
+                    let mono_key = self.make_mono_key(&new_item.pkey());
+                    pipe.set(&data_key, &item_json).set(&mono_key, &mono_json);
+                }
+            }
+
+            results.push(new_item);
+        }
+
+        if let Err(e) = pipe.query_async::<_, ()>(&mut conn).await {
+            tracing::error!("Failed to store items in Redis: {}", e);
+        }
+
+        results
+    }
+
+    async fn invalidate_sync(&self, keys: &[CRUD::Pkey]) {
+        let mut conn = match self.get_connection().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::error!("Failed to get Redis connection for invalidation: {}", e);
+                return;
+            }
+        };
+
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+
+        for key in keys {
+            let data_key = self.make_key(key);
+            let mono_key = self.make_mono_key(key);
+            pipe.del(&data_key).del(&mono_key);
+        }
+
+        if let Err(e) = pipe.query_async::<_, ()>(&mut conn).await {
+            tracing::error!("Failed to invalidate keys in Redis: {}", e);
+        }
+    }
 }
 
 #[async_trait]
@@ -71,89 +152,30 @@ where
 {
     #[tracing::instrument(skip_all)]
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
-        let mut results = Vec::with_capacity(items.len());
-        let mut conn = match self.get_connection().await {
-            Ok(conn) => conn,
-            Err(e) => {
-                tracing::error!("Failed to get Redis connection: {}", e);
-                return items.into_iter().map(Arc::new).collect();
-            }
-        };
-
-        for item in items {
-            let new_item = Arc::new(item);
-            let key = new_item.pkey();
-            let data_key = self.make_key(&key);
-            let mono_key = self.make_mono_key(&key);
-
-            let should_update = match conn.get::<_, Option<String>>(&mono_key).await {
-                Ok(Some(existing_mono_json)) => {
-                    match serde_json::from_str::<CRUD::MonoField>(&existing_mono_json) {
-                        Ok(existing_mono) => new_item.mono_field() > existing_mono,
-                        Err(_) => true,
-                    }
-                }
-                Ok(None) => true,
-                Err(e) => {
-                    tracing::error!("Failed to check monotonic field: {}", e);
-                    true
-                }
-            };
-
-            if should_update {
-                match (
-                    serde_json::to_string(&*new_item),
-                    serde_json::to_string(&new_item.mono_field()),
-                ) {
-                    (Ok(item_json), Ok(mono_json)) => {
-                        let result: Result<(), redis::RedisError> = redis::pipe()
-                            .atomic()
-                            .set(&data_key, &item_json)
-                            .set(&mono_key, &mono_json)
-                            .query_async(&mut conn)
-                            .await;
-
-                        if let Err(e) = result {
-                            tracing::error!("Failed to store item in Redis: {}", e);
-                        }
-                    }
-                    (Err(e), _) | (_, Err(e)) => {
-                        tracing::error!("Failed to serialize item: {}", e);
-                    }
-                }
-            }
-
-            results.push(new_item);
+        if self.dispatch_mutations {
+            let self_clone = self.clone();
+            let items_clone = items.clone();
+            tokio::spawn(async move {
+                let _ = self_clone.insert_sync(items_clone).await;
+            });
+            return items.into_iter().map(Arc::new).collect();
         }
 
-        results
+        self.insert_sync(items).await
     }
 
     #[tracing::instrument(skip_all)]
     async fn invalidate(&self, keys: &[CRUD::Pkey]) {
-        let mut conn = match self.get_connection().await {
-            Ok(conn) => conn,
-            Err(e) => {
-                tracing::error!("Failed to get Redis connection for invalidation: {}", e);
-                return;
-            }
-        };
-
-        for key in keys {
-            let data_key = self.make_key(key);
-            let mono_key = self.make_mono_key(key);
-
-            let result: Result<(), redis::RedisError> = redis::pipe()
-                .atomic()
-                .del(&data_key)
-                .del(&mono_key)
-                .query_async(&mut conn)
-                .await;
-
-            if let Err(e) = result {
-                tracing::error!("Failed to invalidate key in Redis: {}", e);
-            }
+        if self.dispatch_mutations {
+            let self_clone = self.clone();
+            let keys_clone = keys.to_vec();
+            tokio::spawn(async move {
+                let _ = self_clone.invalidate_sync(&keys_clone).await;
+            });
+            return;
         }
+
+        self.invalidate_sync(keys).await
     }
 
     #[tracing::instrument(skip_all)]

@@ -153,7 +153,7 @@ where
             let mut redis_keys_to_fetch = Vec::new();
             let mut redis_indices = Vec::new();
 
-            // For the keys not found in moka, getting from redis.
+            // For the keys not found in moka, getting from redis and backfilling in moka.
             for (i, result) in results.iter().enumerate() {
                 if result.is_none() {
                     redis_keys_to_fetch.push(keys[i].clone());
