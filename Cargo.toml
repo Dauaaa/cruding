@@ -48,6 +48,7 @@ regex = "1.11.1"
 fake = { version = "4", features = ["derive", "chrono", "uuid"] }
 futures = "0.3"
 dashmap = "6"
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
 arc-swap = "1.7.1"
 axum = "0.8.4"
 thiserror = "2.0.16"
