@@ -11,6 +11,8 @@ pub struct RedisCrudableMap<CRUD: Crudable> {
     key_prefix: String,
     /// When true, insert and invalidate are done asynchronously
     dispatch_mutations: bool,
+    /// SHA hash of the compare-and-set Lua script
+    script_sha: Arc<String>,
     _phantom: PhantomData<CRUD>,
 }
 
@@ -36,15 +38,46 @@ where
     CRUD::MonoField: Serialize + for<'de> Deserialize<'de>,
 {
     #[tracing::instrument(skip_all)]
-    pub fn new(config: RedisConfig) -> Result<Self, redis::RedisError> {
+    pub async fn new(config: RedisConfig) -> Result<Self, redis::RedisError> {
         let client = Client::open(config.url)?;
         let key_prefix = config.key_prefix.unwrap_or_else(|| "cruding:".to_string());
         let dispatch_mutations = true;
+
+        // Load Lua script for atomic compare-and-set
+        let mut conn = client.get_async_connection().await?;
+        
+        let script = r#"
+            local existing_mono = redis.call('GET', KEYS[2])
+            
+            if not existing_mono then
+                redis.call('SET', KEYS[1], ARGV[1])
+                redis.call('SET', KEYS[2], ARGV[2])
+                return 1
+            end
+            
+            local existing_val = cjson.decode(existing_mono)
+            local new_val = cjson.decode(ARGV[2])
+            
+            if new_val > existing_val then
+                redis.call('SET', KEYS[1], ARGV[1])
+                redis.call('SET', KEYS[2], ARGV[2])
+                return 1
+            end
+            
+            return 0
+        "#;
+        
+        let sha: String = redis::cmd("SCRIPT")
+            .arg("LOAD")
+            .arg(script)
+            .query_async(&mut conn)
+            .await?;
 
         Ok(Self {
             client,
             key_prefix,
             dispatch_mutations,
+            script_sha: Arc::new(sha),
             _phantom: PhantomData,
         })
     }
@@ -70,53 +103,34 @@ where
             }
         };
 
-        let mut results = Vec::with_capacity(items.len());
         let mut pipe = redis::pipe();
-        pipe.atomic();
 
-        let mono_keys: Vec<String> = items.iter()
-            .map(|item| self.make_mono_key(&item.pkey()))
-            .collect();
+        // Build all EVALSHA commands in a pipeline
+        for item in &items {
+            let data_key = self.make_key(&item.pkey());
+            let mono_key = self.make_mono_key(&item.pkey());
 
-        let existing_monos: Vec<Option<String>> = match conn.get(&mono_keys).await {
-            Ok(values) => values,
-            Err(e) => {
-                tracing::error!("Failed to get existing mono fields: {}", e);
-                vec![None; items.len()]
+            if let (Ok(item_json), Ok(mono_json)) = (
+                serde_json::to_string(item),
+                serde_json::to_string(&item.mono_field()),
+            ) {
+                pipe.cmd("EVALSHA")
+                    .arg(&*self.script_sha)
+                    .arg(2)
+                    .arg(&data_key)
+                    .arg(&mono_key)
+                    .arg(&item_json)
+                    .arg(&mono_json);
             }
-        };
-
-        for (item, existing_mono) in items.into_iter().zip(existing_monos.iter()) {
-            let new_item = Arc::new(item);
-            let should_update = match existing_mono {
-                Some(mono_json) => {
-                    match serde_json::from_str::<CRUD::MonoField>(mono_json) {
-                        Ok(existing) => new_item.mono_field() > existing,
-                        Err(_) => true,
-                    }
-                }
-                None => true,
-            };
-
-            if should_update {
-                if let (Ok(item_json), Ok(mono_json)) = (
-                    serde_json::to_string(&*new_item),
-                    serde_json::to_string(&new_item.mono_field()),
-                ) {
-                    let data_key = self.make_key(&new_item.pkey());
-                    let mono_key = self.make_mono_key(&new_item.pkey());
-                    pipe.set(&data_key, &item_json).set(&mono_key, &mono_json);
-                }
-            }
-
-            results.push(new_item);
         }
 
-        if let Err(e) = pipe.query_async::<_, ()>(&mut conn).await {
-            tracing::error!("Failed to store items in Redis: {}", e);
+        // Execute all EVALSHA commands at once
+        if let Err(e) = pipe.query_async::<_, Vec<i32>>(&mut conn).await {
+            tracing::error!("Failed to execute batch EVALSHA: {}", e);
         }
 
-        results
+        // Return all items as Arc
+        items.into_iter().map(Arc::new).collect()
     }
 
     async fn invalidate_sync(&self, keys: &[CRUD::Pkey]) {

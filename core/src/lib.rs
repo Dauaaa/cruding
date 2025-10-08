@@ -94,11 +94,11 @@ where
     CRUD::Pkey: redis::ToRedisArgs + redis::FromRedisValue + std::fmt::Debug,
     CRUD::MonoField: serde::Serialize + for<'de> serde::Deserialize<'de>,
 {
-    pub fn new(
+    pub async fn new(
         redis_config: redis_cache::RedisConfig,
         moka: Option<MokaFutureCrudableMap<CRUD>>,
     ) -> Result<Self, redis::RedisError> {
-        let redis = redis_cache::RedisCrudableMap::new(redis_config)?;
+        let redis = redis_cache::RedisCrudableMap::new(redis_config).await?;
 
         Ok(Self {
             redis,
@@ -106,19 +106,19 @@ where
         })
     }
 
-    pub fn redis_only(redis_config: redis_cache::RedisConfig) -> Result<Self, redis::RedisError> {
+    pub async fn redis_only(redis_config: redis_cache::RedisConfig) -> Result<Self, redis::RedisError> {
         Ok(Self {
-            redis: redis_cache::RedisCrudableMap::new(redis_config)?,
+            redis: redis_cache::RedisCrudableMap::new(redis_config).await?,
             moka: None,
         })
     }
 
-    pub fn with_moka(
+    pub async fn with_moka(
         redis_config: redis_cache::RedisConfig,
         moka: MokaFutureCrudableMap<CRUD>,
     ) -> Result<Self, redis::RedisError> {
         Ok(Self {
-            redis: redis_cache::RedisCrudableMap::new(redis_config)?,
+            redis: redis_cache::RedisCrudableMap::new(redis_config).await?,
             moka: Some(moka),
         })
     }
@@ -130,7 +130,9 @@ where
     CRUD: Crudable + serde::Serialize + for<'de> serde::Deserialize<'de>,
     CRUD::Pkey: redis::ToRedisArgs + redis::FromRedisValue + std::fmt::Debug,
     CRUD::MonoField: serde::Serialize + for<'de> serde::Deserialize<'de>,
-{
+{   
+    /// This could appear as a Race condition, where a read from redis b/w the 2 updates reverts moka.
+    /// However, moka being monotonic avoids it.
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
         if let Some(moka) = &self.moka {
             CrudableMap::insert(moka, items.clone()).await;
