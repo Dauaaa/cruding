@@ -1,8 +1,8 @@
+use async_trait::async_trait;
 use cruding_core::{Crudable, CrudableInvalidateCause, CrudableMap};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use async_trait::async_trait;
 
 pub use moka;
 
@@ -98,13 +98,15 @@ impl<CRUD: Crudable> CrudableMap<CRUD> for CrudingInMemoryCache<CRUD> {
                     if *cur_mono.get() < insert_mono {
                         cur_mono.insert(insert_mono);
                         self.moka_cache
-                            .insert(key, Arc::new(arc_swap::ArcSwap::new(new_item.clone()))).await;
+                            .insert(key, Arc::new(arc_swap::ArcSwap::new(new_item.clone())))
+                            .await;
                     }
                 }
                 dashmap::Entry::Vacant(vacant) => {
                     vacant.insert(insert_mono);
                     self.moka_cache
-                        .insert(key, Arc::new(arc_swap::ArcSwap::new(new_item.clone()))).await;
+                        .insert(key, Arc::new(arc_swap::ArcSwap::new(new_item.clone())))
+                        .await;
                 }
             }
 
@@ -117,7 +119,7 @@ impl<CRUD: Crudable> CrudableMap<CRUD> for CrudingInMemoryCache<CRUD> {
     async fn invalidate<'a, It>(&self, keys: It, cause: CrudableInvalidateCause)
     where
         It: IntoIterator<Item = (&'a CRUD::Pkey, &'a <CRUD as Crudable>::MonoField)> + Clone + Send,
-        <It as IntoIterator>::IntoIter: Send
+        <It as IntoIterator>::IntoIter: Send,
     {
         for (key, invalidate_mono) in keys {
             match self.mono_map.entry(key.clone()) {
@@ -142,7 +144,7 @@ impl<CRUD: Crudable> CrudableMap<CRUD> for CrudingInMemoryCache<CRUD> {
     async fn get<'a, It>(&self, keys: It) -> Vec<Option<Arc<CRUD>>>
     where
         It: IntoIterator<Item = &'a CRUD::Pkey> + Send,
-        <It as IntoIterator>::IntoIter: Send
+        <It as IntoIterator>::IntoIter: Send,
     {
         let keys = keys.into_iter();
         let (lb, ub) = keys.size_hint();
@@ -153,8 +155,8 @@ impl<CRUD: Crudable> CrudableMap<CRUD> for CrudingInMemoryCache<CRUD> {
                 &self.moka_cache,
                 key,
             )
-                .await
-                .map(|x| x.load_full());
+            .await
+            .map(|x| x.load_full());
             results.push(item);
         }
 

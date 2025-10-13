@@ -14,11 +14,12 @@ use cruding::{
     hook::make_crudable_hook,
     pg_source::{CrudablePostgresSource, PostgresCrudableConnection},
 };
-use cruding_in_mem_cache::{moka, CrudingInMemoryCache};
+use cruding_in_mem_cache::{CrudingInMemoryCache, moka};
 use sea_orm::DatabaseConnection;
 
 use crate::tags::{
-    build_tags_counter_handler, tag_like_filter, update_counters, PostgresTagsRepoImpl, TagsCounterCache, TagsCounterHandler, TagsRepo
+    PostgresTagsRepoImpl, TagsCounterCache, TagsCounterHandler, TagsRepo,
+    build_tags_counter_handler, tag_like_filter, update_counters,
 };
 
 pub mod todo;
@@ -207,15 +208,24 @@ fn build_tags_handler(cache: TagsCache, source: TagsPostgresSource) -> TagsHandl
 
 impl AppState {
     pub async fn new(db_conn: DatabaseConnection) -> Self {
-        let todo_cache = TodoCache::new(moka::future::Cache::builder()
-            .name("todo")
-            .max_capacity(1337)).await;
-        let tags_cache = TagsCache::new(moka::future::Cache::builder()
-            .name("tags")
-            .max_capacity(6969)).await;
-        let tags_counter_cache = TagsCounterCache::new(moka::future::Cache::builder()
-            .name("tags-counter")
-            .max_capacity(4242)).await;
+        let todo_cache = TodoCache::new(
+            moka::future::Cache::builder()
+                .name("todo")
+                .max_capacity(1337),
+        )
+        .await;
+        let tags_cache = TagsCache::new(
+            moka::future::Cache::builder()
+                .name("tags")
+                .max_capacity(6969),
+        )
+        .await;
+        let tags_counter_cache = TagsCounterCache::new(
+            moka::future::Cache::builder()
+                .name("tags-counter")
+                .max_capacity(4242),
+        )
+        .await;
         let todo_source = CrudablePostgresSource::new(db_conn.clone(), true);
         let tags_source = CrudablePostgresSource::new(db_conn.clone(), true);
         let tags_counter_source = CrudablePostgresSource::new(db_conn.clone(), true);

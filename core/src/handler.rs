@@ -1,11 +1,18 @@
 use async_trait::async_trait;
+use tokio::time::Instant;
 
 use crate::{
     Crudable, CrudableHook, CrudableInvalidateCause, CrudableMap, CrudableSource,
     UpdateComparingParams,
     list::{CrudableSourceListExt, CrudingListParams},
 };
-use std::{str::FromStr, sync::Arc};
+use std::{
+    collections::HashMap,
+    num::{NonZeroU8, NonZeroU32},
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 
 pub enum MaybeArc<T> {
     Arced(Arc<T>),
@@ -111,6 +118,7 @@ pub struct CrudableHandlerImpl<
     before_read:
         Option<Arc<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, Source::SourceHandle, Error>>>,
     after_read: Option<Arc<AfterReadHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
+    read_debouncer_sender: Option<tokio::sync::mpsc::Sender<Vec<CRUD::Pkey>>>,
 
     before_update: Option<Arc<CreateUpdateHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
     update_comparing:
@@ -141,6 +149,7 @@ where
             before_create: self.before_create.clone(),
             before_read: self.before_read.clone(),
             after_read: self.after_read.clone(),
+            read_debouncer_sender: self.read_debouncer_sender.clone(),
             before_update: self.before_update.clone(),
             update_comparing: self.update_comparing.clone(),
             before_delete: self.before_delete.clone(),
@@ -284,6 +293,180 @@ where
     }
 }
 
+pub struct CrudableHandlerDebounceReadsOpts {
+    /// Total ms to wait before querying after receiving at least 1 id
+    pub debounce_time_ms: NonZeroU8,
+    /// If number of unique ids over this threshold, will immediately execute query
+    ///
+    /// You can consider the hard cap as 2 times the soft cap
+    pub soft_cap: NonZeroU32,
+    /// Defines how many reads can happen concurrently. You can share this semaphore between
+    /// different handlers to limit the application's overall read usage
+    pub read_semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+pub struct CrudableHandlerImplOpts {
+    pub debounce_reads: Option<CrudableHandlerDebounceReadsOpts>,
+}
+
+struct ReadDebouncer<CRUD, Source>
+where
+    CRUD: Crudable,
+    Source: CrudableSource<CRUD>,
+{
+    chunk_tx: tokio::sync::mpsc::Sender<(tokio::sync::oneshot::Sender<DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>>, Vec<CRUD::Pkey>)>,
+}
+
+type DebouncerResponse<Pkey, CRUD, Error> = Arc<Result<HashMap<Pkey, Arc<CRUD>>, Error>>;
+
+impl<CRUD, Source> ReadDebouncer<CRUD, Source>
+where
+    CRUD: Crudable,
+    Source: CrudableSource<CRUD>,
+    Source::SourceHandle: Clone,
+{
+    fn new<Map: CrudableMap<CRUD>>(
+        map: Map,
+        source: Source,
+        source_handle: Source::SourceHandle,
+        debounce_opts: CrudableHandlerDebounceReadsOpts,
+    ) -> Self {
+        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel(50);
+        let debounce_time_limit = Duration::from_millis(debounce_opts.debounce_time_ms.get() as _);
+        let debounce_soft_cap = debounce_opts.soft_cap.get() as usize;
+        let read_semaphore = debounce_opts.read_semaphore;
+
+        // reader loop
+        tokio::spawn({
+            async move {
+                struct ReadDebouncerCurrentSendInfo<CRUD, Source>
+                where
+                    CRUD: Crudable,
+                    Source: CrudableSource<CRUD>,
+                {
+                    chunk: Vec<CRUD::Pkey>,
+                    requester_rx_channels: Vec<tokio::sync::oneshot::Sender<DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>>>,
+                }
+
+                let mut debounce_info = None;
+
+                let send_query = |debounce_info: ReadDebouncerCurrentSendInfo<CRUD, Source>| {
+                    let read_semaphore = read_semaphore.clone();
+                    let source = source.clone();
+                    let source_handle = source_handle.clone();
+
+                    tokio::spawn(async move {
+                        let _permit = read_semaphore.acquire().await;
+                        let res =
+                            Arc::new(source.read(&debounce_info.chunk, source_handle).await.map(
+                                |res| {
+                                    res.into_iter()
+                                        .map(|crud| (crud.pkey(), Arc::new(crud)))
+                                        .collect()
+                                },
+                            ));
+
+                        for requester_channel_tx in debounce_info.requester_rx_channels {
+                            // if error just drop, we don't care if no readers
+                            requester_channel_tx.send(res.clone());
+                        }
+                    });
+                };
+
+                let mut debounce_deadline = Instant::now();
+
+                loop {
+                    fn poll_chunks<'a, CRUD: Crudable, Source: CrudableSource<CRUD>>(
+                        send_query: impl Fn(ReadDebouncerCurrentSendInfo<CRUD, Source>) + 'a,
+                        chunk_rx: &'a mut tokio::sync::mpsc::Receiver<(
+                            tokio::sync::oneshot::Sender<DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>>,
+                            Vec<<CRUD as Crudable>::Pkey>,
+                        )>,
+                        debounce_info: &'a mut Option<ReadDebouncerCurrentSendInfo<CRUD, Source>>,
+                        debounce_deadline: &'a mut Instant,
+                        debounce_time_limit: Duration,
+                        debounce_soft_cap: usize,
+                    ) -> impl Future<Output = bool> + 'a {
+                        async move {
+                            if let Some((requester_response_tx, chunk)) = chunk_rx.recv().await {
+                                let debounce_info_ref = debounce_info.get_or_insert_with(|| {
+                                    *debounce_deadline = Instant::now() + debounce_time_limit;
+                                    ReadDebouncerCurrentSendInfo::<CRUD, Source> {
+                                        chunk: Vec::with_capacity(debounce_soft_cap * 2),
+                                        requester_rx_channels: Vec::with_capacity(100),
+                                    }
+                                });
+
+                                debounce_info_ref.chunk.extend(chunk);
+                                debounce_info_ref.requester_rx_channels.push(requester_response_tx);
+
+                                if debounce_info_ref.chunk.len() >= debounce_soft_cap {
+                                    let debounce_info = std::mem::take(debounce_info).unwrap();
+
+                                    send_query(debounce_info);
+                                }
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                    }
+
+                    let do_break = if debounce_info.is_some() {
+                        let now = Instant::now();
+
+                        if debounce_deadline < now {
+                            let debounce_info = std::mem::take(&mut debounce_info).unwrap();
+
+                            send_query(debounce_info);
+                            false
+                        } else {
+                            let alarm = tokio::time::sleep(debounce_deadline - now);
+                            tokio::select! {
+                                do_break = poll_chunks(send_query, &mut chunk_rx, &mut debounce_info, &mut debounce_deadline, debounce_time_limit, debounce_soft_cap) => { do_break },
+                                _ = alarm => {
+                                    let debounce_info = std::mem::take(&mut debounce_info).unwrap();
+
+                                    send_query(debounce_info);
+                                    false
+                                }
+                            }
+                        }
+                    } else {
+                        poll_chunks(
+                            send_query,
+                            &mut chunk_rx,
+                            &mut debounce_info,
+                            &mut debounce_deadline,
+                            debounce_time_limit,
+                            debounce_soft_cap,
+                        )
+                        .await
+                    };
+
+                    if do_break {
+                        break;
+                    }
+                }
+            }
+        });
+
+        Self {
+            chunk_tx,
+        }
+    }
+
+    async fn debounce(
+        &self,
+        keys: Vec<CRUD::Pkey>,
+    ) -> Arc<Result<HashMap<CRUD::Pkey, Arc<CRUD>>, Source::Error>> {
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        self.chunk_tx.send((tx, keys)).await.unwrap();
+
+        rx.await.unwrap()
+    }
+}
+
 impl<CRUD, Map, Source, Ctx, SourceHandle, Error, Column>
     CrudableHandlerImpl<CRUD, Map, Source, Ctx, Error, Column>
 where
@@ -297,10 +480,18 @@ where
 {
     /// Create a new instance of a CrudableHandler, all hooks will be empty, you need to install
     /// them
-    pub fn new(map: Map, source: Source) -> Self {
+    pub fn new(map: Map, source: Source, opts: CrudableHandlerImplOpts) -> Self {
+        let read_debouncer_sender = if let Some(debounce_read_opts) = opts.debounce_reads {
+            tokio::spawn(async move {});
+            todo!()
+        } else {
+            None
+        };
+
         Self {
             map,
             source,
+            read_debouncer_sender,
             before_create: None,
             before_read: None,
             after_read: None,
