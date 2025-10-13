@@ -608,12 +608,24 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "mockall",
- "moka",
  "rand 0.9.2",
- "redis",
  "serde",
  "serde_json",
  "thiserror 2.0.16",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "cruding_in_mem_cache"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "cruding_core",
+ "dashmap",
+ "moka",
  "tokio",
  "tracing",
 ]
@@ -673,6 +685,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cruding_redis_cache"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "cruding_core",
+ "dashmap",
+ "moka",
+ "redis",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cruding_todo_example"
 version = "0.0.0"
 dependencies = [
@@ -681,6 +708,7 @@ dependencies = [
  "axum",
  "chrono",
  "cruding",
+ "cruding_in_mem_cache",
  "cruding_macros",
  "futures",
  "sea-orm",
@@ -791,6 +819,7 @@ dependencies = [
  "axum",
  "chrono",
  "cruding",
+ "cruding_in_mem_cache",
  "cruding_macros",
  "sea-orm",
  "serde",

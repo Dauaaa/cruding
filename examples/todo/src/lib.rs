@@ -12,14 +12,13 @@ use cruding::{
     axum_api::router::CrudRouter,
     handler::CrudableHandlerImpl,
     hook::make_crudable_hook,
-    moka,
     pg_source::{CrudablePostgresSource, PostgresCrudableConnection},
 };
+use cruding_in_mem_cache::{moka, CrudingInMemoryCache};
 use sea_orm::DatabaseConnection;
 
 use crate::tags::{
-    PostgresTagsRepoImpl, TagsCounterHandler, TagsRepo, build_tags_counter_handler,
-    tag_like_filter, update_counters,
+    build_tags_counter_handler, tag_like_filter, update_counters, PostgresTagsRepoImpl, TagsCounterCache, TagsCounterHandler, TagsRepo
 };
 
 pub mod todo;
@@ -52,8 +51,7 @@ type AxumCtx = ();
 // implementation.
 type FullCtx = Arc<(AxumCtx, AppCtx)>;
 
-type TodoCache =
-    moka::future::Cache<<todo::Model as Crudable>::Pkey, Arc<arc_swap::ArcSwap<todo::Model>>>;
+type TodoCache = CrudingInMemoryCache<todo::Model>;
 type TodoPostgresSource = CrudablePostgresSource<todo::Entity, FullCtx, ApiError>;
 pub type TodoHandler = CrudableHandlerImpl<
     todo::Model,
@@ -66,8 +64,7 @@ pub type TodoHandler = CrudableHandlerImpl<
     todo::Column,
 >;
 
-type TagsCache =
-    moka::future::Cache<<tags::Model as Crudable>::Pkey, Arc<arc_swap::ArcSwap<tags::Model>>>;
+type TagsCache = CrudingInMemoryCache<tags::Model>;
 type TagsPostgresSource = CrudablePostgresSource<tags::Entity, FullCtx, ApiError>;
 pub type TagsHandler = CrudableHandlerImpl<
     tags::Model,
@@ -209,19 +206,16 @@ fn build_tags_handler(cache: TagsCache, source: TagsPostgresSource) -> TagsHandl
 }
 
 impl AppState {
-    pub fn new(db_conn: DatabaseConnection) -> Self {
-        let todo_cache = moka::future::Cache::builder()
+    pub async fn new(db_conn: DatabaseConnection) -> Self {
+        let todo_cache = TodoCache::new(moka::future::Cache::builder()
             .name("todo")
-            .max_capacity(1337)
-            .build();
-        let tags_cache = moka::future::Cache::builder()
+            .max_capacity(1337)).await;
+        let tags_cache = TagsCache::new(moka::future::Cache::builder()
             .name("tags")
-            .max_capacity(6969)
-            .build();
-        let tags_counter_cache = moka::future::Cache::builder()
+            .max_capacity(6969)).await;
+        let tags_counter_cache = TagsCounterCache::new(moka::future::Cache::builder()
             .name("tags-counter")
-            .max_capacity(4242)
-            .build();
+            .max_capacity(4242)).await;
         let todo_source = CrudablePostgresSource::new(db_conn.clone(), true);
         let tags_source = CrudablePostgresSource::new(db_conn.clone(), true);
         let tags_counter_source = CrudablePostgresSource::new(db_conn.clone(), true);

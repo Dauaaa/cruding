@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    Crudable, CrudableHook, CrudableMap, CrudableSource, UpdateComparingParams,
+    Crudable, CrudableHook, CrudableInvalidateCause, CrudableMap, CrudableSource,
+    UpdateComparingParams,
     list::{CrudableSourceListExt, CrudingListParams},
 };
 use std::{str::FromStr, sync::Arc};
@@ -497,8 +498,16 @@ where
 
         if self.source.should_use_cache(source_handle.clone()).await {
             // Invalidate cache instead of updating it, only reading from the source should generate new entries in the cache
-            let keys: Vec<CRUD::Pkey> = input.iter().map(|item| item.pkey()).collect();
-            self.invalidate_from_map(&keys).await;
+            let invalidated = input
+                .iter()
+                .map(|item| (item.pkey(), item.mono_field()))
+                .collect::<Vec<_>>();
+            self.map
+                .invalidate(
+                    invalidated.iter().map(|(a, b)| (a, b)),
+                    CrudableInvalidateCause::Update,
+                )
+                .await;
 
             Ok(input.into_iter().map(MaybeArc::Owned).collect())
         } else {
@@ -548,10 +557,21 @@ where
                 .await?;
         }
 
-        self.source.delete(&input, source_handle.clone()).await?;
+        let deleted = self
+            .source
+            .delete(&input, source_handle.clone())
+            .await?
+            .into_iter()
+            .map(|crud| (crud.pkey(), crud.mono_field()))
+            .collect::<Vec<_>>();
 
         if self.source.should_use_cache(source_handle.clone()).await {
-            self.invalidate_from_map(&input).await;
+            self.map
+                .invalidate(
+                    deleted.iter().map(|(a, b)| (a, b)),
+                    CrudableInvalidateCause::Delete,
+                )
+                .await;
         }
 
         Ok(())
@@ -575,10 +595,6 @@ where
         }
 
         (res_hit, res_miss)
-    }
-
-    async fn invalidate_from_map(&self, keys: &[CRUD::Pkey]) {
-        self.map.invalidate(keys).await;
     }
 }
 

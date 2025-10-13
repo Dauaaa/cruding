@@ -5,15 +5,11 @@
 pub mod handler;
 pub mod hook;
 pub mod list;
-pub mod redis_cache;
-
 
 use async_trait::async_trait;
 use std::{hash::Hash, sync::Arc};
 
 use crate::hook::CrudableHook;
-
-pub use moka;
 
 pub trait Crudable: Clone + Send + Sync + 'static {
     type Pkey: Clone + Eq + Hash + Send + Sync + 'static;
@@ -23,15 +19,34 @@ pub trait Crudable: Clone + Send + Sync + 'static {
     fn mono_field(&self) -> Self::MonoField;
 }
 
+pub enum CrudableInvalidateCause {
+    Update,
+    Delete,
+}
+
+/// This interface is very dependent on the Handler's behavior. All comments are about
+/// [`handler::CrudableHandlerImpl`] usage of CrudableMap.
 #[async_trait]
 pub trait CrudableMap<CRUD: Crudable>: Clone + Send + Sync + 'static {
     /// Updates the cache but only does that if item's mono is greater.
     /// This will still return Arc<item> even if it lost to the current inserted entry.
+    ///
+    /// The behavior for inserting should
     async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>>;
-    async fn invalidate(&self, keys: &[CRUD::Pkey]);
+    /// This will be called on update/delete and will always be called with the mono of the
+    /// updated/deleted item.
+    ///
+    /// The behavior for invalidating should remove all entries with mono <=
+    async fn invalidate<'a, It>(&self, keys: It, cause: CrudableInvalidateCause)
+    where
+        It: IntoIterator<Item = (&'a CRUD::Pkey, &'a <CRUD as Crudable>::MonoField)> + Clone + Send,
+        <It as IntoIterator>::IntoIter: Send;
     /// The order of elements found will be the same as the corresponding keys provided as input.
     /// And if the key didn't exist in the db, corresponding value in the vec will be None.
-    async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>>;
+    async fn get<'a, It>(&self, keys: It) -> Vec<Option<Arc<CRUD>>>
+    where
+        It: IntoIterator<Item = &'a CRUD::Pkey> + Send,
+        <It as IntoIterator>::IntoIter: Send;
 }
 
 #[async_trait]
@@ -78,177 +93,3 @@ pub struct UpdateComparingParams<CRUD: Crudable> {
     pub current: Vec<CRUD>,
     pub update_payload: Vec<CRUD>,
 }
-
-pub type MokaFutureCrudableMap<CRUD> =
-    moka::future::Cache<<CRUD as Crudable>::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>;
-
-#[derive(Clone)]
-pub struct CrudableMapWithMoka<CRUD: Crudable> {
-    redis: redis_cache::RedisCrudableMap<CRUD>,
-    moka: Option<MokaFutureCrudableMap<CRUD>>,
-}
-
-impl<CRUD> CrudableMapWithMoka<CRUD>
-where
-    CRUD: Crudable + serde::Serialize + for<'de> serde::Deserialize<'de>,
-    CRUD::Pkey: redis::ToRedisArgs + redis::FromRedisValue + std::fmt::Debug,
-    CRUD::MonoField: serde::Serialize + for<'de> serde::Deserialize<'de>,
-{
-    pub async fn new(
-        redis_config: redis_cache::RedisConfig,
-        moka: Option<MokaFutureCrudableMap<CRUD>>,
-    ) -> Result<Self, redis::RedisError> {
-        let redis = redis_cache::RedisCrudableMap::new(redis_config).await?;
-
-        Ok(Self {
-            redis,
-            moka,
-        })
-    }
-
-    pub async fn redis_only(redis_config: redis_cache::RedisConfig) -> Result<Self, redis::RedisError> {
-        Ok(Self {
-            redis: redis_cache::RedisCrudableMap::new(redis_config).await?,
-            moka: None,
-        })
-    }
-
-    pub async fn with_moka(
-        redis_config: redis_cache::RedisConfig,
-        moka: MokaFutureCrudableMap<CRUD>,
-    ) -> Result<Self, redis::RedisError> {
-        Ok(Self {
-            redis: redis_cache::RedisCrudableMap::new(redis_config).await?,
-            moka: Some(moka),
-        })
-    }
-}
-
-#[async_trait]
-impl<CRUD> CrudableMap<CRUD> for CrudableMapWithMoka<CRUD>
-where
-    CRUD: Crudable + serde::Serialize + for<'de> serde::Deserialize<'de>,
-    CRUD::Pkey: redis::ToRedisArgs + redis::FromRedisValue + std::fmt::Debug,
-    CRUD::MonoField: serde::Serialize + for<'de> serde::Deserialize<'de>,
-{   
-    /// This could appear as a Race condition, where a read from redis b/w the 2 updates reverts moka.
-    /// However, moka being monotonic avoids it.
-    async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
-        if let Some(moka) = &self.moka {
-            CrudableMap::insert(moka, items.clone()).await;
-        }
-        self.redis.insert(items).await
-    }
-
-    /// Invalidating redis first to avoid race condition.
-    /// Invalidating moka first could still lead to repopulating it with older entry when another process reads from redis and backfills.
-    /// Monotonicity doesn't protect here.
-    async fn invalidate(&self, keys: &[CRUD::Pkey]) {
-        CrudableMap::invalidate(&self.redis, keys).await;
-
-        if let Some(moka) = &self.moka {
-            CrudableMap::invalidate(moka, keys).await;
-        }
-    }
-
-    async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>> {
-        
-        if let Some(moka) = &self.moka {
-            let mut results = CrudableMap::get(moka, keys).await;
-
-            let mut redis_keys_to_fetch = Vec::new();
-            let mut redis_indices = Vec::new();
-
-            // For the keys not found in moka, getting from redis and backfilling in moka.
-            for (i, result) in results.iter().enumerate() {
-                if result.is_none() {
-                    redis_keys_to_fetch.push(keys[i].clone());
-                    redis_indices.push(i);
-                }
-            }
-
-            if !redis_keys_to_fetch.is_empty() {
-                let redis_results = CrudableMap::get(&self.redis, &redis_keys_to_fetch).await;
-
-                let items_to_backfill: Vec<CRUD> = redis_results
-                    .iter()
-                    .filter_map(|opt| opt.as_ref().map(|arc| (**arc).clone()))
-                    .collect();
-
-                if !items_to_backfill.is_empty() {
-                    let moka_clone = moka.clone();
-                    tokio::spawn(async move {
-                        let _ = CrudableMap::insert(&moka_clone, items_to_backfill).await;
-                    });
-                }
-
-                for (redis_idx, &final_idx) in redis_indices.iter().enumerate() {
-                    if let Some(redis_result) = redis_results.get(redis_idx) {
-                        results[final_idx] = redis_result.clone();
-                    }
-                }
-            }
-
-            return results;
-        }
-        
-        // No Moka, just use Redis
-        CrudableMap::get(&self.redis, keys).await
-    }
-}
-
-#[async_trait]
-impl<CRUD: Crudable> CrudableMap<CRUD>
-    for moka::future::Cache<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>
-{
-    async fn insert(&self, items: Vec<CRUD>) -> Vec<Arc<CRUD>> {
-        let mut results = Vec::with_capacity(items.len());
-
-        for item in items {
-            let new_item = Arc::new(item);
-            let key = new_item.pkey();
-
-            // Guarantee that new_item is latest or not included in cache
-            let entry =
-                moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::entry(self, key)
-                    .or_insert_with(async { Arc::new(arc_swap::ArcSwap::new(new_item.clone())) })
-                    .await;
-
-            entry.value().rcu(|cur| {
-                if cur.mono_field() < new_item.mono_field() {
-                    new_item.clone()
-                } else {
-                    cur.clone()
-                }
-            });
-
-            results.push(new_item);
-        }
-
-        results
-    }
-
-    async fn invalidate(&self, keys: &[CRUD::Pkey]) {
-        for key in keys {
-            moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::invalidate(self, key)
-                .await;
-        }
-    }
-
-    async fn get(&self, keys: &[CRUD::Pkey]) -> Vec<Option<Arc<CRUD>>> {
-        let mut results = Vec::with_capacity(keys.len());
-
-        for key in keys {
-            let item =
-                moka::future::Cache::<CRUD::Pkey, Arc<arc_swap::ArcSwap<CRUD>>>::get(self, key)
-                    .await
-                    .map(|x| x.load_full());
-            results.push(item);
-        }
-
-        results
-    }
-}
-
-// Re-export types for convenience
-pub use redis_cache::{RedisCrudableMap, RedisConfig};

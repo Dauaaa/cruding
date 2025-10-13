@@ -3,7 +3,9 @@ use redis::{AsyncCommands, Client, FromRedisValue, ToRedisArgs};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
-use crate::{Crudable, CrudableMap};
+pub use redis;
+
+use cruding_core::{Crudable, CrudableMap};
 
 #[derive(Clone)]
 pub struct RedisCrudableMap<CRUD: Crudable> {
@@ -17,18 +19,9 @@ pub struct RedisCrudableMap<CRUD: Crudable> {
 }
 
 #[derive(Debug, Clone)]
-pub struct RedisConfig {
-    pub url: String,
-    pub key_prefix: Option<String>,
-}
-
-impl Default for RedisConfig {
-    fn default() -> Self {
-        Self {
-            url: "redis://127.0.0.1:6379".to_string(),
-            key_prefix: Some("cruding:".to_string()),
-        }
-    }
+pub struct RedisConfig<T: redis::IntoConnectionInfo> {
+    pub url: T,
+    pub key_prefix: String,
 }
 
 impl<CRUD> RedisCrudableMap<CRUD>
@@ -38,14 +31,16 @@ where
     CRUD::MonoField: Serialize + for<'de> Deserialize<'de>,
 {
     #[tracing::instrument(skip_all)]
-    pub async fn new(config: RedisConfig) -> Result<Self, redis::RedisError> {
+    pub async fn new<T: redis::IntoConnectionInfo>(
+        config: RedisConfig<T>,
+    ) -> Result<Self, redis::RedisError> {
         let client = Client::open(config.url)?;
-        let key_prefix = config.key_prefix.unwrap_or_else(|| "cruding:".to_string());
+        let key_prefix = config.key_prefix;
         let dispatch_mutations = true;
 
         // Load Lua script for atomic compare-and-set
         let mut conn = client.get_async_connection().await?;
-        
+
         let script = r#"
             local existing_mono = redis.call('GET', KEYS[2])
             
@@ -66,7 +61,7 @@ where
             
             return 0
         "#;
-        
+
         let sha: String = redis::cmd("SCRIPT")
             .arg("LOAD")
             .arg(script)
@@ -207,15 +202,13 @@ where
             let data_key = self.make_key(key);
 
             match conn.get::<_, Option<String>>(&data_key).await {
-                Ok(Some(item_json)) => {
-                    match serde_json::from_str::<CRUD>(&item_json) {
-                        Ok(item) => results.push(Some(Arc::new(item))),
-                        Err(e) => {
-                            tracing::error!("Failed to deserialize item from Redis: {}", e);
-                            results.push(None);
-                        }
+                Ok(Some(item_json)) => match serde_json::from_str::<CRUD>(&item_json) {
+                    Ok(item) => results.push(Some(Arc::new(item))),
+                    Err(e) => {
+                        tracing::error!("Failed to deserialize item from Redis: {}", e);
+                        results.push(None);
                     }
-                }
+                },
                 Ok(None) => results.push(None),
                 Err(e) => {
                     tracing::error!("Failed to get item from Redis: {}", e);

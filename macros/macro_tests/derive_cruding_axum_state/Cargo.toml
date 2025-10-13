@@ -12,3 +12,4 @@ sea-orm = { workspace = true }
 serde = { workspace = true }
 chrono = { workspace = true }
 axum = { workspace = true }
+cruding_in_mem_cache = { workspace = true }

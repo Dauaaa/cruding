@@ -1,0 +1,19 @@
+[package]
+name = "cruding_redis_cache"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[dependencies]
+cruding_core = { workspace = true }
+moka = { workspace = true }
+arc-swap = { workspace = true }
+dashmap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+redis = { workspace = true }
+async-trait = { workspace = true }

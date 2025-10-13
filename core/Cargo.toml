@@ -12,15 +12,14 @@ keywords = ["api", "crud"]
 categories = []
 
 [dependencies]
-moka = { workspace = true }
 async-trait = { workspace = true }
 mockall = { workspace = true }
 tracing = { workspace = true }
 arc-swap = { workspace = true }
 serde_json = { workspace = true }
-redis = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

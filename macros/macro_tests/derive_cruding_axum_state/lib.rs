@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use axum::{http::StatusCode, response::IntoResponse};
 use cruding::{
-    MokaFutureCrudableMap,
     handler::CrudableHandlerImpl,
     pg_source::{CrudablePostgresSource, PostgresCrudableConnection},
 };
+use cruding_in_mem_cache::CrudingInMemoryCache;
 use sea_orm::DatabaseConnection;
 
 mod todo {
@@ -98,8 +98,8 @@ impl std::error::Error for ApiError {}
 type AppCtx = AppState;
 type AxumCtx = ();
 type FullCtx = Arc<(AxumCtx, AppCtx)>;
-type TodoCache = MokaFutureCrudableMap<todo::Model>;
-type TodoCache2 = MokaFutureCrudableMap<todo_2::Model>;
+type TodoCache = CrudingInMemoryCache<todo::Model>;
+type TodoCache2 = CrudingInMemoryCache<todo_2::Model>;
 type TodoPostgresSource = CrudablePostgresSource<todo::Entity, FullCtx, ApiError>;
 type TodoPostgresSource2 = CrudablePostgresSource<todo_2::Entity, FullCtx, ApiError>;
 type TodoHandler = CrudableHandlerImpl<

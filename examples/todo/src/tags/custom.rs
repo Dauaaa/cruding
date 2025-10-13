@@ -11,11 +11,11 @@ use axum::{
 use cruding::{
     handler::{CrudableHandler, CrudableHandlerImpl, CrudableHandlerListExt, MaybeArc},
     list::{CrudingListSort, CrudingListSortOrder},
-    moka,
     pg_source::{
         CrudablePostgresSource, PostgresCrudableConnection, PostgresCrudableConnectionInner,
     },
 };
+use cruding_in_mem_cache::CrudingInMemoryCache;
 use sea_orm::{IntoActiveModel, JoinType, QuerySelect, TransactionTrait, sea_query::OnConflict};
 use tokio::try_join;
 
@@ -71,10 +71,7 @@ pub mod tags_counter {
     }
 }
 
-type TagsCounterCache = moka::future::Cache<
-    <tags_counter::Model as Crudable>::Pkey,
-    Arc<arc_swap::ArcSwap<tags_counter::Model>>,
->;
+pub type TagsCounterCache = CrudingInMemoryCache<tags_counter::Model>;
 type TagsCounterPostgresSource = CrudablePostgresSource<tags_counter::Entity, (), DbErr>;
 pub type TagsCounterHandler = CrudableHandlerImpl<
     tags_counter::Model,

@@ -71,7 +71,7 @@ async fn main() {
 
     let db_conn = connect_and_prepare().await;
 
-    let state = AppState::new(db_conn);
+    let state = AppState::new(db_conn).await;
 
     let todo_router = AppState::todo_router();
     let tags_router = AppState::tags_router();
