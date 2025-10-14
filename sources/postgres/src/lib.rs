@@ -428,7 +428,7 @@ where
         !handle.conn.read().await.is_transaction()
     }
 
-    async fn can_use_debouncer(&self, handle: Self::SourceHandle) -> bool {
+    async fn can_use_batcher(&self, handle: Self::SourceHandle) -> bool {
         self.should_use_cache(handle).await
     }
 }

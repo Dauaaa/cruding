@@ -607,6 +607,7 @@ version = "0.4.3"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "futures",
  "mockall",
  "rand 0.9.2",
  "serde",

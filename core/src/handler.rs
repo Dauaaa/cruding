@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use futures::future::try_join_all;
 use tokio::time::Instant;
 
 use crate::{
@@ -7,7 +8,7 @@ use crate::{
     list::{CrudableSourceListExt, CrudingListParams},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     num::{NonZeroU8, NonZeroU32},
     pin::Pin,
     str::FromStr,
@@ -119,7 +120,7 @@ pub struct CrudableHandlerImpl<
     before_read:
         Option<Arc<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, Source::SourceHandle, Error>>>,
     after_read: Option<Arc<AfterReadHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
-    read_debouncer_sender: Option<ReadDebouncer<CRUD, Source>>,
+    read_batcher_sender: Option<ReadBatcher<CRUD, Source>>,
 
     before_update: Option<Arc<CreateUpdateHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
     update_comparing:
@@ -150,7 +151,7 @@ where
             before_create: self.before_create.clone(),
             before_read: self.before_read.clone(),
             after_read: self.after_read.clone(),
-            read_debouncer_sender: self.read_debouncer_sender.clone(),
+            read_batcher_sender: self.read_batcher_sender.clone(),
             before_update: self.before_update.clone(),
             update_comparing: self.update_comparing.clone(),
             before_delete: self.before_delete.clone(),
@@ -294,35 +295,38 @@ where
     }
 }
 
-pub struct CrudableHandlerDebounceReadsOpts<SourceHandle> {
+pub struct CrudableHandlerBatchReadsOpts<SourceHandle> {
     /// Total ms to wait before querying after receiving at least 1 id
-    pub debounce_time_ms: NonZeroU8,
+    pub batch_time_ms: NonZeroU8,
     /// If number of unique ids over this threshold, will immediately execute query
     ///
     /// You can consider the hard cap as 2 times the soft cap
     pub soft_cap: NonZeroU32,
     /// Defines how many reads can happen concurrently. You can share this semaphore between
     /// different handlers to limit the application's overall read usage
+    ///
+    /// If this is ever dropped the batcher will panic
     pub read_semaphore: Arc<tokio::sync::Semaphore>,
     pub source_handle_for_reads: SourceHandle,
 }
 
 pub struct CrudableHandlerImplOpts<SourceHandle> {
-    pub debounce_reads: Option<CrudableHandlerDebounceReadsOpts<SourceHandle>>,
+    pub batch_reads: Option<CrudableHandlerBatchReadsOpts<SourceHandle>>,
 }
 
-struct ReadDebouncer<CRUD, Source>
+struct ReadBatcher<CRUD, Source>
 where
     CRUD: Crudable,
     Source: CrudableSource<CRUD>,
 {
     chunk_tx: tokio::sync::mpsc::Sender<(
-        tokio::sync::oneshot::Sender<DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>>,
+        tokio::sync::oneshot::Sender<BatcherResponse<CRUD::Pkey, CRUD, Source::Error>>,
         Vec<CRUD::Pkey>,
     )>,
+    soft_cap: usize,
 }
 
-impl<CRUD, Source> Clone for ReadDebouncer<CRUD, Source>
+impl<CRUD, Source> Clone for ReadBatcher<CRUD, Source>
 where
     CRUD: Crudable,
     Source: CrudableSource<CRUD>,
@@ -330,13 +334,14 @@ where
     fn clone(&self) -> Self {
         Self {
             chunk_tx: self.chunk_tx.clone(),
+            soft_cap: self.soft_cap.clone(),
         }
     }
 }
 
-type DebouncerResponse<Pkey, CRUD, Error> = Result<Arc<HashMap<Pkey, Arc<CRUD>>>, Arc<Error>>;
+type BatcherResponse<Pkey, CRUD, Error> = Result<Arc<HashMap<Pkey, Arc<CRUD>>>, Arc<Error>>;
 
-impl<CRUD, Source> ReadDebouncer<CRUD, Source>
+impl<CRUD, Source> ReadBatcher<CRUD, Source>
 where
     CRUD: Crudable,
     Source: CrudableSource<CRUD>,
@@ -345,41 +350,44 @@ where
     fn new<Map: CrudableMap<CRUD>>(
         map: Map,
         source: Source,
-        debounce_opts: CrudableHandlerDebounceReadsOpts<Source::SourceHandle>,
+        batch_opts: CrudableHandlerBatchReadsOpts<Source::SourceHandle>,
     ) -> Self {
         let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel(50);
-        let debounce_time_limit = Duration::from_millis(debounce_opts.debounce_time_ms.get() as _);
-        let debounce_soft_cap = debounce_opts.soft_cap.get() as usize;
-        let read_semaphore = debounce_opts.read_semaphore;
+        let batch_time_limit = Duration::from_millis(batch_opts.batch_time_ms.get() as _);
+        let batch_soft_cap = batch_opts.soft_cap.get() as usize;
+        let read_semaphore = batch_opts.read_semaphore;
 
         // reader loop
         tokio::spawn({
             async move {
-                struct ReadDebouncerCurrentSendInfo<CRUD, Source>
+                struct ReadBatcherCurrentSendInfo<CRUD, Source>
                 where
                     CRUD: Crudable,
                     Source: CrudableSource<CRUD>,
                 {
-                    chunk: Vec<CRUD::Pkey>,
+                    chunk: HashSet<CRUD::Pkey>,
                     requester_rx_channels: Vec<
                         tokio::sync::oneshot::Sender<
-                            DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>,
+                            BatcherResponse<CRUD::Pkey, CRUD, Source::Error>,
                         >,
                     >,
                 }
 
-                let mut debounce_info = None;
+                let mut batch_info = None;
 
-                let send_query = |debounce_info: ReadDebouncerCurrentSendInfo<CRUD, Source>| {
+                let send_query = |batch_info: ReadBatcherCurrentSendInfo<CRUD, Source>| {
                     let read_semaphore = read_semaphore.clone();
                     let source = source.clone();
-                    let source_handle = debounce_opts.source_handle_for_reads.clone();
+                    let source_handle = batch_opts.source_handle_for_reads.clone();
                     let map = map.clone();
 
                     tokio::spawn(async move {
-                        let _permit = read_semaphore.acquire().await;
+                        let _permit = read_semaphore.acquire().await.unwrap();
                         let res = source
-                            .read(&debounce_info.chunk, source_handle)
+                            .read(
+                                &batch_info.chunk.into_iter().collect::<Vec<_>>(),
+                                source_handle,
+                            )
                             .await
                             .map(|res| {
                                 Arc::new(
@@ -398,48 +406,48 @@ where
                             map.insert(values).await;
                         }
 
-                        for requester_channel_tx in debounce_info.requester_rx_channels {
+                        for requester_channel_tx in batch_info.requester_rx_channels {
                             // if error just drop, we don't care if no readers
                             let _ = requester_channel_tx.send(res.clone());
                         }
                     });
                 };
 
-                let mut debounce_deadline = Instant::now();
+                let mut batch_deadline = Instant::now();
 
                 loop {
                     fn poll_chunks<'a, CRUD: Crudable, Source: CrudableSource<CRUD>>(
-                        send_query: impl Fn(ReadDebouncerCurrentSendInfo<CRUD, Source>) + 'a,
+                        send_query: impl Fn(ReadBatcherCurrentSendInfo<CRUD, Source>) + 'a,
                         chunk_rx: &'a mut tokio::sync::mpsc::Receiver<(
                             tokio::sync::oneshot::Sender<
-                                DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>,
+                                BatcherResponse<CRUD::Pkey, CRUD, Source::Error>,
                             >,
                             Vec<<CRUD as Crudable>::Pkey>,
                         )>,
-                        debounce_info: &'a mut Option<ReadDebouncerCurrentSendInfo<CRUD, Source>>,
-                        debounce_deadline: &'a mut Instant,
-                        debounce_time_limit: Duration,
-                        debounce_soft_cap: usize,
+                        batch_info: &'a mut Option<ReadBatcherCurrentSendInfo<CRUD, Source>>,
+                        batch_deadline: &'a mut Instant,
+                        batch_time_limit: Duration,
+                        batch_soft_cap: usize,
                     ) -> impl Future<Output = bool> + 'a {
                         async move {
                             if let Some((requester_response_tx, chunk)) = chunk_rx.recv().await {
-                                let debounce_info_ref = debounce_info.get_or_insert_with(|| {
-                                    *debounce_deadline = Instant::now() + debounce_time_limit;
-                                    ReadDebouncerCurrentSendInfo::<CRUD, Source> {
-                                        chunk: Vec::with_capacity(debounce_soft_cap * 2),
+                                let batch_info_ref = batch_info.get_or_insert_with(|| {
+                                    *batch_deadline = Instant::now() + batch_time_limit;
+                                    ReadBatcherCurrentSendInfo::<CRUD, Source> {
+                                        chunk: HashSet::with_capacity(batch_soft_cap * 2),
                                         requester_rx_channels: Vec::with_capacity(100),
                                     }
                                 });
 
-                                debounce_info_ref.chunk.extend(chunk);
-                                debounce_info_ref
+                                batch_info_ref.chunk.extend(chunk);
+                                batch_info_ref
                                     .requester_rx_channels
                                     .push(requester_response_tx);
 
-                                if debounce_info_ref.chunk.len() >= debounce_soft_cap {
-                                    let debounce_info = std::mem::take(debounce_info).unwrap();
+                                if batch_info_ref.chunk.len() >= batch_soft_cap {
+                                    let batch_info = std::mem::take(batch_info).unwrap();
 
-                                    send_query(debounce_info);
+                                    send_query(batch_info);
                                 }
                                 false
                             } else {
@@ -448,22 +456,22 @@ where
                         }
                     }
 
-                    let do_break = if debounce_info.is_some() {
+                    let do_break = if batch_info.is_some() {
                         let now = Instant::now();
 
-                        if debounce_deadline < now {
-                            let debounce_info = std::mem::take(&mut debounce_info).unwrap();
+                        if batch_deadline < now {
+                            let batch_info = std::mem::take(&mut batch_info).unwrap();
 
-                            send_query(debounce_info);
+                            send_query(batch_info);
                             false
                         } else {
-                            let alarm = tokio::time::sleep(debounce_deadline - now);
+                            let alarm = tokio::time::sleep(batch_deadline - now);
                             tokio::select! {
-                                do_break = poll_chunks(send_query, &mut chunk_rx, &mut debounce_info, &mut debounce_deadline, debounce_time_limit, debounce_soft_cap) => { do_break },
+                                do_break = poll_chunks(send_query, &mut chunk_rx, &mut batch_info, &mut batch_deadline, batch_time_limit, batch_soft_cap) => { do_break },
                                 _ = alarm => {
-                                    let debounce_info = std::mem::take(&mut debounce_info).unwrap();
+                                    let batch_info = batch_info.take().unwrap();
 
-                                    send_query(debounce_info);
+                                    send_query(batch_info);
                                     false
                                 }
                             }
@@ -472,32 +480,46 @@ where
                         poll_chunks(
                             send_query,
                             &mut chunk_rx,
-                            &mut debounce_info,
-                            &mut debounce_deadline,
-                            debounce_time_limit,
-                            debounce_soft_cap,
+                            &mut batch_info,
+                            &mut batch_deadline,
+                            batch_time_limit,
+                            batch_soft_cap,
                         )
                         .await
                     };
 
                     if do_break {
+                        if let Some(info) = batch_info.take() {
+                            send_query(info);
+                        }
                         break;
                     }
                 }
             }
         });
 
-        Self { chunk_tx }
+        Self {
+            chunk_tx,
+            soft_cap: batch_opts.soft_cap.get() as _,
+        }
     }
 
-    async fn debounce(
-        &self,
-        keys: Vec<CRUD::Pkey>,
-    ) -> DebouncerResponse<CRUD::Pkey, CRUD, Source::Error> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.chunk_tx.send((tx, keys)).await.unwrap();
+    async fn batch(&self, keys: &[CRUD::Pkey]) -> BatcherResponse<CRUD::Pkey, CRUD, Source::Error> {
+        let mut responses = vec![];
+        for chunk in keys.chunks(self.soft_cap) {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.chunk_tx.send((tx, chunk.to_vec())).await.unwrap();
+            responses.push(async move { rx.await.unwrap() });
+        }
 
-        rx.await.unwrap()
+        let maps = try_join_all(responses).await?;
+
+        let mut res = HashMap::with_capacity(keys.len());
+        for map in maps {
+            res.extend(map.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+
+        Ok(Arc::new(res))
     }
 }
 
@@ -519,11 +541,11 @@ where
         source: Source,
         opts: CrudableHandlerImplOpts<Source::SourceHandle>,
     ) -> Self {
-        let read_debouncer_sender = if let Some(debounce_read_opts) = opts.debounce_reads {
-            Some(ReadDebouncer::new(
+        let read_batcher_sender = if let Some(batch_read_opts) = opts.batch_reads {
+            Some(ReadBatcher::new(
                 map.clone(),
                 source.clone(),
-                debounce_read_opts,
+                batch_read_opts,
             ))
         } else {
             None
@@ -532,7 +554,7 @@ where
         Self {
             map,
             source,
-            read_debouncer_sender,
+            read_batcher_sender,
             before_create: None,
             before_read: None,
             after_read: None,
@@ -657,14 +679,14 @@ where
                 ) -> Pin<
                     Box<dyn Future<Output = Result<Vec<Arc<CRUD>>, Arc<Source::Error>>> + Send>,
                 > + Send,
-        > = if let Some(ref debouncer) = self.read_debouncer_sender
-            && self.source.can_use_debouncer(source_handle.clone()).await
+        > = if let Some(ref batcher) = self.read_batcher_sender
+            && self.source.can_use_batcher(source_handle.clone()).await
         {
-            let debouncer = debouncer.clone();
+            let batcher = batcher.clone();
             Box::new(move |keys: Vec<CRUD::Pkey>| {
                 Box::pin(async move {
                     let keys_clone = keys.clone();
-                    let items = debouncer.debounce(keys).await?;
+                    let items = batcher.batch(&keys).await?;
 
                     let mut res = Vec::with_capacity(keys_clone.len());
                     for key in keys_clone {
