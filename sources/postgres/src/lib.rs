@@ -427,6 +427,10 @@ where
     async fn should_use_cache(&self, handle: Self::SourceHandle) -> bool {
         !handle.conn.read().await.is_transaction()
     }
+
+    async fn can_use_debouncer(&self, handle: Self::SourceHandle) -> bool {
+        self.should_use_cache(handle).await
+    }
 }
 
 #[async_trait]

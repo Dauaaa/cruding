@@ -9,6 +9,7 @@ use crate::{
 use std::{
     collections::HashMap,
     num::{NonZeroU8, NonZeroU32},
+    pin::Pin,
     str::FromStr,
     sync::Arc,
     time::Duration,
@@ -107,7 +108,7 @@ pub struct CrudableHandlerImpl<
     Map: CrudableMap<CRUD>,
     Source: CrudableSource<CRUD>,
     Ctx,
-    Error: std::error::Error + From<Source::Error>,
+    Error: std::error::Error + From<Source::Error> + From<Arc<Source::Error>>,
     Column = (),
 > {
     map: Map,
@@ -118,7 +119,7 @@ pub struct CrudableHandlerImpl<
     before_read:
         Option<Arc<BeforeReadDeleteHook<Self, CRUD::Pkey, Ctx, Source::SourceHandle, Error>>>,
     after_read: Option<Arc<AfterReadHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
-    read_debouncer_sender: Option<tokio::sync::mpsc::Sender<Vec<CRUD::Pkey>>>,
+    read_debouncer_sender: Option<ReadDebouncer<CRUD, Source>>,
 
     before_update: Option<Arc<CreateUpdateHook<Self, CRUD, Ctx, Source::SourceHandle, Error>>>,
     update_comparing:
@@ -140,7 +141,7 @@ where
     Map: CrudableMap<CRUD>,
     Source: CrudableSource<CRUD>,
     Ctx: Clone,
-    Error: std::error::Error + From<Source::Error>,
+    Error: std::error::Error + From<Source::Error> + From<Arc<Source::Error>>,
 {
     fn clone(&self) -> Self {
         Self {
@@ -220,8 +221,8 @@ where
     Source: CrudableSourceListExt<CRUD, Column, Error = DbError, SourceHandle = SourceHandle>,
     Ctx: Clone + Send + 'static,
     SourceHandle: Clone + Send + 'static,
-    Error: std::error::Error + From<DbError> + Send,
-    DbError: Send,
+    Error: std::error::Error + From<DbError> + From<Arc<DbError>> + Send,
+    DbError: Send + Sync,
     Column: std::fmt::Debug + FromStr + Send + Sync + 'static,
 {
     #[tracing::instrument(skip(self, ctx, handle), err)]
@@ -253,8 +254,8 @@ where
     Source: CrudableSource<CRUD, Error = DbError, SourceHandle = SourceHandle>,
     Ctx: Clone + Send + 'static,
     SourceHandle: Clone + Send + 'static,
-    Error: std::error::Error + From<DbError> + Send,
-    DbError: Send,
+    Error: std::error::Error + From<DbError> + From<Arc<DbError>> + Send,
+    DbError: Send + Sync,
 {
     async fn create(
         &self,
@@ -293,7 +294,7 @@ where
     }
 }
 
-pub struct CrudableHandlerDebounceReadsOpts {
+pub struct CrudableHandlerDebounceReadsOpts<SourceHandle> {
     /// Total ms to wait before querying after receiving at least 1 id
     pub debounce_time_ms: NonZeroU8,
     /// If number of unique ids over this threshold, will immediately execute query
@@ -303,10 +304,11 @@ pub struct CrudableHandlerDebounceReadsOpts {
     /// Defines how many reads can happen concurrently. You can share this semaphore between
     /// different handlers to limit the application's overall read usage
     pub read_semaphore: Arc<tokio::sync::Semaphore>,
+    pub source_handle_for_reads: SourceHandle,
 }
 
-pub struct CrudableHandlerImplOpts {
-    pub debounce_reads: Option<CrudableHandlerDebounceReadsOpts>,
+pub struct CrudableHandlerImplOpts<SourceHandle> {
+    pub debounce_reads: Option<CrudableHandlerDebounceReadsOpts<SourceHandle>>,
 }
 
 struct ReadDebouncer<CRUD, Source>
@@ -314,10 +316,25 @@ where
     CRUD: Crudable,
     Source: CrudableSource<CRUD>,
 {
-    chunk_tx: tokio::sync::mpsc::Sender<(tokio::sync::oneshot::Sender<DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>>, Vec<CRUD::Pkey>)>,
+    chunk_tx: tokio::sync::mpsc::Sender<(
+        tokio::sync::oneshot::Sender<DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>>,
+        Vec<CRUD::Pkey>,
+    )>,
 }
 
-type DebouncerResponse<Pkey, CRUD, Error> = Arc<Result<HashMap<Pkey, Arc<CRUD>>, Error>>;
+impl<CRUD, Source> Clone for ReadDebouncer<CRUD, Source>
+where
+    CRUD: Crudable,
+    Source: CrudableSource<CRUD>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            chunk_tx: self.chunk_tx.clone(),
+        }
+    }
+}
+
+type DebouncerResponse<Pkey, CRUD, Error> = Result<Arc<HashMap<Pkey, Arc<CRUD>>>, Arc<Error>>;
 
 impl<CRUD, Source> ReadDebouncer<CRUD, Source>
 where
@@ -328,8 +345,7 @@ where
     fn new<Map: CrudableMap<CRUD>>(
         map: Map,
         source: Source,
-        source_handle: Source::SourceHandle,
-        debounce_opts: CrudableHandlerDebounceReadsOpts,
+        debounce_opts: CrudableHandlerDebounceReadsOpts<Source::SourceHandle>,
     ) -> Self {
         let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel(50);
         let debounce_time_limit = Duration::from_millis(debounce_opts.debounce_time_ms.get() as _);
@@ -345,7 +361,11 @@ where
                     Source: CrudableSource<CRUD>,
                 {
                     chunk: Vec<CRUD::Pkey>,
-                    requester_rx_channels: Vec<tokio::sync::oneshot::Sender<DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>>>,
+                    requester_rx_channels: Vec<
+                        tokio::sync::oneshot::Sender<
+                            DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>,
+                        >,
+                    >,
                 }
 
                 let mut debounce_info = None;
@@ -353,22 +373,34 @@ where
                 let send_query = |debounce_info: ReadDebouncerCurrentSendInfo<CRUD, Source>| {
                     let read_semaphore = read_semaphore.clone();
                     let source = source.clone();
-                    let source_handle = source_handle.clone();
+                    let source_handle = debounce_opts.source_handle_for_reads.clone();
+                    let map = map.clone();
 
                     tokio::spawn(async move {
                         let _permit = read_semaphore.acquire().await;
-                        let res =
-                            Arc::new(source.read(&debounce_info.chunk, source_handle).await.map(
-                                |res| {
+                        let res = source
+                            .read(&debounce_info.chunk, source_handle)
+                            .await
+                            .map(|res| {
+                                Arc::new(
                                     res.into_iter()
                                         .map(|crud| (crud.pkey(), Arc::new(crud)))
-                                        .collect()
-                                },
-                            ));
+                                        .collect::<HashMap<_, _>>(),
+                                )
+                            })
+                            .map_err(Arc::new);
+
+                        if let Ok(ref res_ok) = res {
+                            let values = res_ok
+                                .values()
+                                .map(|crud| (**crud).clone())
+                                .collect::<Vec<_>>();
+                            map.insert(values).await;
+                        }
 
                         for requester_channel_tx in debounce_info.requester_rx_channels {
                             // if error just drop, we don't care if no readers
-                            requester_channel_tx.send(res.clone());
+                            let _ = requester_channel_tx.send(res.clone());
                         }
                     });
                 };
@@ -379,7 +411,9 @@ where
                     fn poll_chunks<'a, CRUD: Crudable, Source: CrudableSource<CRUD>>(
                         send_query: impl Fn(ReadDebouncerCurrentSendInfo<CRUD, Source>) + 'a,
                         chunk_rx: &'a mut tokio::sync::mpsc::Receiver<(
-                            tokio::sync::oneshot::Sender<DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>>,
+                            tokio::sync::oneshot::Sender<
+                                DebouncerResponse<CRUD::Pkey, CRUD, Source::Error>,
+                            >,
                             Vec<<CRUD as Crudable>::Pkey>,
                         )>,
                         debounce_info: &'a mut Option<ReadDebouncerCurrentSendInfo<CRUD, Source>>,
@@ -398,7 +432,9 @@ where
                                 });
 
                                 debounce_info_ref.chunk.extend(chunk);
-                                debounce_info_ref.requester_rx_channels.push(requester_response_tx);
+                                debounce_info_ref
+                                    .requester_rx_channels
+                                    .push(requester_response_tx);
 
                                 if debounce_info_ref.chunk.len() >= debounce_soft_cap {
                                     let debounce_info = std::mem::take(debounce_info).unwrap();
@@ -451,16 +487,14 @@ where
             }
         });
 
-        Self {
-            chunk_tx,
-        }
+        Self { chunk_tx }
     }
 
     async fn debounce(
         &self,
         keys: Vec<CRUD::Pkey>,
-    ) -> Arc<Result<HashMap<CRUD::Pkey, Arc<CRUD>>, Source::Error>> {
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
+    ) -> DebouncerResponse<CRUD::Pkey, CRUD, Source::Error> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
         self.chunk_tx.send((tx, keys)).await.unwrap();
 
         rx.await.unwrap()
@@ -475,15 +509,22 @@ where
     Source: CrudableSource<CRUD, SourceHandle = SourceHandle>,
     Ctx: Clone + Send + 'static,
     SourceHandle: Clone + Send + 'static,
-    Error: std::error::Error + From<Source::Error> + Send,
+    Error: std::error::Error + From<Source::Error> + From<Arc<Source::Error>> + Send,
     Source::Error: Send,
 {
     /// Create a new instance of a CrudableHandler, all hooks will be empty, you need to install
     /// them
-    pub fn new(map: Map, source: Source, opts: CrudableHandlerImplOpts) -> Self {
+    pub fn new(
+        map: Map,
+        source: Source,
+        opts: CrudableHandlerImplOpts<Source::SourceHandle>,
+    ) -> Self {
         let read_debouncer_sender = if let Some(debounce_read_opts) = opts.debounce_reads {
-            tokio::spawn(async move {});
-            todo!()
+            Some(ReadDebouncer::new(
+                map.clone(),
+                source.clone(),
+                debounce_read_opts,
+            ))
         } else {
             None
         };
@@ -581,7 +622,8 @@ where
 
         if self.source.should_use_cache(source_handle.clone()).await {
             Ok(self
-                .persist_to_map(input)
+                .map
+                .insert(input)
                 .await
                 .into_iter()
                 .map(MaybeArc::Arced)
@@ -609,19 +651,60 @@ where
                 .await?;
         }
 
+        let read_source: Box<
+            dyn FnOnce(
+                    Vec<CRUD::Pkey>,
+                ) -> Pin<
+                    Box<dyn Future<Output = Result<Vec<Arc<CRUD>>, Arc<Source::Error>>> + Send>,
+                > + Send,
+        > = if let Some(ref debouncer) = self.read_debouncer_sender
+            && self.source.can_use_debouncer(source_handle.clone()).await
+        {
+            let debouncer = debouncer.clone();
+            Box::new(move |keys: Vec<CRUD::Pkey>| {
+                Box::pin(async move {
+                    let keys_clone = keys.clone();
+                    let items = debouncer.debounce(keys).await?;
+
+                    let mut res = Vec::with_capacity(keys_clone.len());
+                    for key in keys_clone {
+                        if let Some(crud) = items.get(&key) {
+                            res.push(crud.clone())
+                        }
+                    }
+
+                    Ok(res)
+                })
+            })
+        } else {
+            let handler = self.clone();
+            let source_handle = source_handle.clone();
+
+            Box::new(move |keys: Vec<CRUD::Pkey>| {
+                Box::pin(async move {
+                    Ok(handler
+                        .map
+                        .insert(
+                            handler
+                                .source
+                                .read(&keys, source_handle.clone())
+                                .await
+                                .map_err(Arc::new)?,
+                        )
+                        .await)
+                })
+            })
+        };
+
         let mut items = if self.source.should_use_cache(source_handle.clone()).await {
             let (mut items, missed_keys) = self.get_from_map(&input).await;
 
             // Inserting to cache, this takes care of invalidated cache entries.
             items.extend(
-                self.persist_to_map(
-                    self.source
-                        .read(&missed_keys, source_handle.clone())
-                        .await?,
-                )
-                .await
-                .into_iter()
-                .map(MaybeArc::Arced),
+                read_source(missed_keys)
+                    .await?
+                    .into_iter()
+                    .map(MaybeArc::Arced),
             );
 
             items
@@ -723,14 +806,15 @@ where
             let (mut items, missed_keys) = self.get_from_map(&input).await;
 
             items.extend(
-                self.persist_to_map(
-                    self.source
-                        .read(&missed_keys, source_handle.clone())
-                        .await?,
-                )
-                .await
-                .into_iter()
-                .map(MaybeArc::Arced),
+                self.map
+                    .insert(
+                        self.source
+                            .read(&missed_keys, source_handle.clone())
+                            .await?,
+                    )
+                    .await
+                    .into_iter()
+                    .map(MaybeArc::Arced),
             );
 
             items
@@ -766,10 +850,6 @@ where
         }
 
         Ok(())
-    }
-
-    async fn persist_to_map(&self, input: Vec<CRUD>) -> Vec<Arc<CRUD>> {
-        self.map.insert(input).await
     }
 
     async fn get_from_map(&self, keys: &[CRUD::Pkey]) -> (Vec<MaybeArc<CRUD>>, Vec<CRUD::Pkey>) {

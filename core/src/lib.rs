@@ -86,6 +86,9 @@ pub trait CrudableSource<CRUD: Crudable>: Clone + Send + Sync + 'static {
     /// if, for example, a database implementation is under a transaction (so whatever the db
     /// returns could be tainted with uncommited changes).
     async fn should_use_cache(&self, handle: Self::SourceHandle) -> bool;
+    /// Hints the handler if it can use a debouncer (using the provided source handle to the
+    /// handler on startup)
+    async fn can_use_debouncer(&self, handle: Self::SourceHandle) -> bool;
 }
 
 pub struct UpdateComparingParams<CRUD: Crudable> {
