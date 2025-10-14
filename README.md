@@ -40,3 +40,4 @@ REFERENCING NEW TABLE AS new_rows
 FOR EACH STATEMENT
 EXECUTE FUNCTION orders_after_ins_outbox();
 ```
+- [ ] think of a way to implement notification for clients (for live updates)

@@ -66,15 +66,20 @@ pub trait CrudableSource<CRUD: Crudable>: Clone + Send + Sync + 'static {
     ) -> Result<Vec<CRUD>, Self::Error>;
     async fn update(
         &self,
-        items: Vec<CRUD>,
+        items: UpdateComparingParams<CRUD>,
         handle: Self::SourceHandle,
     ) -> Result<Vec<CRUD>, Self::Error>;
     async fn read_for_update(
         &self,
         keys: &[CRUD::Pkey],
         handle: Self::SourceHandle,
-    ) -> Result<Vec<CRUD>, Self::Error> {
-        self.read(keys, handle).await
+    ) -> Result<Vec<Arc<CRUD>>, Self::Error> {
+        Ok(self
+            .read(keys, handle)
+            .await?
+            .into_iter()
+            .map(Arc::new)
+            .collect())
     }
     async fn delete(
         &self,
@@ -93,6 +98,6 @@ pub trait CrudableSource<CRUD: Crudable>: Clone + Send + Sync + 'static {
 
 pub struct UpdateComparingParams<CRUD: Crudable> {
     // not Arc<_> because we're always fetching from source
-    pub current: Vec<CRUD>,
+    pub current: Vec<Arc<CRUD>>,
     pub update_payload: Vec<CRUD>,
 }

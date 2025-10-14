@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use cruding_core::{
-    Crudable, CrudableSource,
+    Crudable, CrudableSource, UpdateComparingParams,
     list::{CrudableSourceListExt, CrudingListParams, CrudingListSortOrder},
 };
 use sea_orm::{
@@ -240,10 +240,10 @@ where
     #[tracing::instrument(skip_all)]
     async fn update(
         &self,
-        items: Vec<<CRUDTable as EntityTrait>::Model>,
+        items: UpdateComparingParams<<CRUDTable as EntityTrait>::Model>,
         handle: Self::SourceHandle,
     ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
-        if items.is_empty() {
+        if items.update_payload.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -262,7 +262,11 @@ where
 
         // If nothing is updatable (edge case), just return current rows for these keys
         if updatable_cols.is_empty() {
-            let keys = items.iter().map(Crudable::pkey).collect::<Vec<_>>();
+            let keys = items
+                .update_payload
+                .iter()
+                .map(Crudable::pkey)
+                .collect::<Vec<_>>();
             return self.read(&keys, handle).await;
         }
 
@@ -295,12 +299,13 @@ where
         // 2) Build VALUES list as placeholders with bind params
         // Row shape: (pk1, pk2, ..., col1, col2, ...)
         let total_cols = pk_cols.len() + updatable_cols.len();
-        let mut bind_params: Vec<Value> = Vec::with_capacity(items.len() * total_cols);
+        let mut bind_params: Vec<Value> =
+            Vec::with_capacity(items.update_payload.len() * total_cols);
 
         // helper to make "($1, $2, ... $N)" for a given starting index
         let mut next_idx: usize = 1;
-        let mut rows_sql: Vec<String> = Vec::with_capacity(items.len());
-        for m in items {
+        let mut rows_sql: Vec<String> = Vec::with_capacity(items.update_payload.len());
+        for m in items.update_payload {
             let am = m.into_active_model();
 
             // push PKs in declared order
@@ -369,7 +374,7 @@ where
         &self,
         keys: &[<<CRUDTable as EntityTrait>::Model as Crudable>::Pkey],
         handle: Self::SourceHandle,
-    ) -> Result<Vec<<CRUDTable as EntityTrait>::Model>, Self::Error> {
+    ) -> Result<Vec<Arc<<CRUDTable as EntityTrait>::Model>>, Self::Error> {
         let mut q =
             CRUDTable::find().filter(<CRUDTable as PostgresCrudableTable>::get_pkey_filter(keys));
 
@@ -395,9 +400,10 @@ where
             PostgresCrudableConnectionInner::Connection(c) => q.all(c).await,
             PostgresCrudableConnectionInner::OwnedTransaction(_, tx) => q.all(tx.as_ref()).await,
             PostgresCrudableConnectionInner::BorrowedTransaction(tx) => q.all(tx.as_ref()).await,
-        }?;
-
-        handle.maybe_commit().await?;
+        }?
+        .into_iter()
+        .map(Arc::new)
+        .collect();
 
         Ok(returned_items)
     }

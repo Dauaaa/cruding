@@ -773,6 +773,8 @@ where
             .await?;
 
         if let Some(ref hook) = self.update_comparing {
+            let current = current.iter().map(Arc::clone).collect::<Vec<_>>();
+
             input = hook
                 .invoke(
                     self.clone(),
@@ -790,7 +792,16 @@ where
             return Ok(vec![]);
         }
 
-        input = self.source.update(input, source_handle.clone()).await?;
+        input = self
+            .source
+            .update(
+                UpdateComparingParams {
+                    current,
+                    update_payload: input,
+                },
+                source_handle.clone(),
+            )
+            .await?;
 
         if self.source.should_use_cache(source_handle.clone()).await {
             // Invalidate cache instead of updating it, only reading from the source should generate new entries in the cache
